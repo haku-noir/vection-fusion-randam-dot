@@ -30,7 +30,7 @@ import numpy as np
 import csv
 import os
 import random
-from datetime import datetime  # ★変更点: 現在時刻を取得するためにdatetimeをインポート
+from datetime import datetime
 
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
@@ -59,9 +59,12 @@ SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
 
 # ログ
-# ★変更点: ログファイル名に現在時刻のタイムスタンプを追加
+LOG_DIR = PANNING_MODE
+os.makedirs(LOG_DIR, exist_ok=True)
+
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-LOG_NAME = f'experiment_log_{PANNING_MODE}_{timestamp}.csv'
+LOG_FILENAME = f'experiment_log_{timestamp}.csv'
+LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
@@ -136,11 +139,12 @@ def build_stereo_wave(sync_to_red: bool, mode: str) -> sound.Sound:
 # 5. ログファイルオープン
 # ------------------------------------------------------------------
 try:
-    log_fh = open(LOG_NAME, 'w', newline='', encoding='utf-8')
+    # ★変更点: 完全なファイルパスでファイルを開く
+    log_fh = open(LOG_PATH, 'w', newline='', encoding='utf-8')
     log_csv = csv.writer(log_fh)
     log_csv.writerow(['trial', 'condition', 'panning_mode', 'response', 'RT'])
 except IOError as e:
-    print(f"ログファイルを開けませんでした: {LOG_NAME}")
+    print(f"ログファイルを開けませんでした: {LOG_PATH}")
     print(f"エラー: {e}")
     core.quit()
 
@@ -216,7 +220,7 @@ try:
         key_name, rt = keys[0]
         participant_response = response_mapping.get(key_name, 'invalid')
 
-        log_csv.writerow([trial_idx, cond_type, PANNING_MODE, participant_response, f"{rt:.3f}"])
+        log_csv.writerow([trial_idx, PANNING_MODE, cond_type, participant_response, f"{rt:.3f}"])
         log_fh.flush()
 
         # ----- ITI -----
@@ -240,7 +244,8 @@ finally:
         stereo_snd.stop()
     if 'log_fh' in locals() and log_fh and not log_fh.closed:
         log_fh.close()
-        print(f"ログを保存しました: {os.path.abspath(LOG_NAME)}")
+        # ★変更点: 正しいファイルパスを表示
+        print(f"ログを保存しました: {os.path.abspath(LOG_PATH)}")
     if 'win' in locals() and win:
         win.close()
     core.quit()

@@ -12,6 +12,7 @@ audiovisual_experiment.py
 - 各試行で音と同期するドットの色をランダムに決定。
 """
 
+
 # ------------------------------------------------------------------
 # 0. PTB を最優先でロードするための prefs 設定
 # ------------------------------------------------------------------
@@ -20,6 +21,7 @@ prefs.hardware['audioLib'] = ['PTB']      # PTB を第一候補に固定
 prefs.hardware['audioLatencyMode'] = 3    # 低レイテンシ 0–4（3 がおすすめ）
 # 必要なら出力デバイスを指定:
 # prefs.hardware['audioDevice'] = 'Built-in Output'
+
 
 # ------------------------------------------------------------------
 # 1. 必要ライブラリのインポート
@@ -31,6 +33,7 @@ import csv
 import os
 import random
 from datetime import datetime
+
 
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
@@ -49,14 +52,14 @@ FALL_SPEED    = 0            # 落下速度 [pix/s]
 OSC_FREQ      = 0.24         # 横揺れ周波数 [Hz]
 OSC_AMP       = 60           # 横揺れ振幅 [pix]
 
-# 試行
-TRIAL_DURATION   = 10.0      # 各試行の刺激呈示時間 [s]
-ITI              = 1.0       # 刺激間インターバル [s]
-
 # 音
 AUDIO_FREQ    = 440          # ベーストーン周波数 [Hz]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
+
+# 試行
+TRIAL_DURATION   = 30.0      # 各試行の刺激掲示時間 [s]
+ITI              = 1.0       # 刺激間インターバル [s]
 
 # ログ
 LOG_DIR = PANNING_MODE
@@ -65,6 +68,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 LOG_FILENAME = f'experiment_log_{timestamp}.csv'
 LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
+
 
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
@@ -92,6 +96,7 @@ def init_positions():
     xpos = np.random.uniform(-WIN_W/2, WIN_W/2, N_DOTS)
     ypos = np.random.uniform(-WIN_H/2, WIN_H/2, N_DOTS) # Y座標も全域に
     return np.column_stack([xpos, ypos])
+
 
 # ------------------------------------------------------------------
 # 4. サウンド波形生成（モード切替対応）
@@ -135,18 +140,17 @@ def build_stereo_wave(sync_to_red: bool, mode: str) -> sound.Sound:
     
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
 
+
 # ------------------------------------------------------------------
 # 5. ログファイルオープン
 # ------------------------------------------------------------------
 try:
     log_fh = open(LOG_PATH, 'w', newline='', encoding='utf-8')
     log_csv = csv.writer(log_fh)
-    # ★変更点: ヘッダーにすべてのパラメータを追加
     header = [
         'trial', 'panning_mode', 'condition', 'response', 'RT',
         'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
-        'osc_freq', 'osc_amp', 'trial_duration', 'iti', 'audio_freq',
-        'sample_rate', 'max_itd_s'
+        'osc_freq', 'osc_amp', 'audio_freq', 'sample_rate', 'max_itd_s'
     ]
     log_csv.writerow(header)
 except IOError as e:
@@ -179,16 +183,28 @@ try:
             stereo_snd.stop()
         stereo_snd = build_stereo_wave(sync_red, PANNING_MODE)
 
-        # ----- 刺激呈示 -----
+        # ----- 刺激提示 & 応答取得 -----
+        participant_response = 'no_response' # 試行ごとの応答を初期化
+        rt = -1.0 # RTを初期化
+
         trial_clock = core.Clock()
         stereo_snd.play()
-        trial_clock.reset()
+        trial_clock.reset() # この時点からRTを計測開始
 
         while trial_clock.getTime() < TRIAL_DURATION:
-            if event.getKeys(['escape']):
-                experiment_running = False
-                break
+            # 毎フレーム、キー入力をチェック
+            keys = event.getKeys(keyList=['r', 'g', 'escape'], timeStamped=trial_clock)
             
+            if keys:
+                key_name, rt = keys[0]
+                if key_name == 'escape':
+                    experiment_running = False
+                else:
+                    # 'r'か'g'が押されたら応答を記録してループを抜ける
+                    participant_response = response_mapping.get(key_name, 'invalid')
+                break # 応答があったので刺激呈示ループを終了
+            
+            # --- 描画コード ---
             now = trial_clock.getTime()
             dt  = now - last_t
             last_t = now
@@ -201,35 +217,24 @@ try:
             red_current_pos[:, 0]   = red_base_x + x_osc_offset
             green_current_pos[:, 0] = green_base_x - x_osc_offset
             
-            # ドットは落下しない設定 (FALL_SPEED=0) なので、画面外処理は不要
-            
             red_dots.xys, green_dots.xys = red_current_pos, green_current_pos
             red_dots.draw()
             green_dots.draw()
             win.flip()
 
-        if not experiment_running: break
-        if stereo_snd and stereo_snd.status != constants.STOPPED: stereo_snd.stop()
+        # ループ終了後（応答があったかタイムアウトした時点）に音を止める
+        if stereo_snd and stereo_snd.status != constants.STOPPED:
+            stereo_snd.stop()
 
-        # ----- 応答取得 -----
-        prompt = visual.TextStim(win, text="どちらのドット群と音が同期していましたか？\n[R] 赤 / [G] 緑\n\nESCキーで実験終了",
-                                 color='white', height=24, wrapWidth=WIN_W*0.8)
-        prompt.draw()
-        win.flip()
-        
-        keys = event.waitKeys(keyList=['r', 'g', 'escape'], timeStamped=core.Clock())
-        
-        if not keys or keys[0][0] == 'escape':
-            experiment_running = False
+        # Escapeキーで実験全体を終了
+        if not experiment_running:
             break
-        
-        key_name, rt = keys[0]
-        participant_response = response_mapping.get(key_name, 'invalid')
 
+        # 試行終了後にすぐログを記録
         log_data = [
             trial_idx, PANNING_MODE, cond_type, participant_response, f"{rt:.3f}",
             WIN_SIZE[0], WIN_SIZE[1], N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
-            OSC_AMP, TRIAL_DURATION, ITI, AUDIO_FREQ, SAMPLE_RATE, MAX_ITD_S
+            OSC_AMP, AUDIO_FREQ, SAMPLE_RATE, MAX_ITD_S
         ]
         log_csv.writerow(log_data)
         log_fh.flush()

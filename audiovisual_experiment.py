@@ -17,7 +17,7 @@ audiovisual_experiment.py
 # ------------------------------------------------------------------
 from psychopy import prefs
 prefs.hardware['audioLib'] = ['PTB']      # PTB を第一候補に固定
-prefs.hardware['audioLatencyMode'] = 3     # 低レイテンシ 0–4（3 がおすすめ）
+prefs.hardware['audioLatencyMode'] = 3    # 低レイテンシ 0–4（3 がおすすめ）
 # 必要なら出力デバイスを指定:
 # prefs.hardware['audioDevice'] = 'Built-in Output'
 
@@ -30,6 +30,7 @@ import numpy as np
 import csv
 import os
 import random
+from datetime import datetime  # ★変更点: 現在時刻を取得するためにdatetimeをインポート
 
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
@@ -45,12 +46,12 @@ WIN_SIZE      = (1280, 720)  # ウィンドウ解像度
 N_DOTS        = 200          # 赤・緑それぞれのドット数
 DOT_SIZE      = 5            # ドット直径 [pix]
 FALL_SPEED    = 0            # 落下速度 [pix/s]
-OSC_FREQ      = 0.24          # 横揺れ周波数 [Hz]
+OSC_FREQ      = 0.24         # 横揺れ周波数 [Hz]
 OSC_AMP       = 60           # 横揺れ振幅 [pix]
 
 # 試行
-TRIAL_DURATION   = 10.0        # 各試行の刺激呈示時間 [s]
-ITI              = 1.0         # 刺激間インターバル [s]
+TRIAL_DURATION   = 10.0      # 各試行の刺激呈示時間 [s]
+ITI              = 1.0       # 刺激間インターバル [s]
 
 # 音
 AUDIO_FREQ    = 440          # ベーストーン周波数 [Hz]
@@ -58,7 +59,9 @@ SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
 
 # ログ
-LOG_NAME      = f'experiment_log_{PANNING_MODE}.csv' # モードに応じてファイル名を変更
+# ★変更点: ログファイル名に現在時刻のタイムスタンプを追加
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+LOG_NAME = f'experiment_log_{PANNING_MODE}_{timestamp}.csv'
 
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
@@ -242,4 +245,3 @@ finally:
         win.close()
     core.quit()
     print("実験を終了しました。")
-

@@ -139,10 +139,16 @@ def build_stereo_wave(sync_to_red: bool, mode: str) -> sound.Sound:
 # 5. ログファイルオープン
 # ------------------------------------------------------------------
 try:
-    # ★変更点: 完全なファイルパスでファイルを開く
     log_fh = open(LOG_PATH, 'w', newline='', encoding='utf-8')
     log_csv = csv.writer(log_fh)
-    log_csv.writerow(['trial', 'condition', 'panning_mode', 'response', 'RT'])
+    # ★変更点: ヘッダーにすべてのパラメータを追加
+    header = [
+        'trial', 'panning_mode', 'condition', 'response', 'RT',
+        'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
+        'osc_freq', 'osc_amp', 'trial_duration', 'iti', 'audio_freq',
+        'sample_rate', 'max_itd_s'
+    ]
+    log_csv.writerow(header)
 except IOError as e:
     print(f"ログファイルを開けませんでした: {LOG_PATH}")
     print(f"エラー: {e}")
@@ -220,7 +226,12 @@ try:
         key_name, rt = keys[0]
         participant_response = response_mapping.get(key_name, 'invalid')
 
-        log_csv.writerow([trial_idx, PANNING_MODE, cond_type, participant_response, f"{rt:.3f}"])
+        log_data = [
+            trial_idx, PANNING_MODE, cond_type, participant_response, f"{rt:.3f}",
+            WIN_SIZE[0], WIN_SIZE[1], N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
+            OSC_AMP, TRIAL_DURATION, ITI, AUDIO_FREQ, SAMPLE_RATE, MAX_ITD_S
+        ]
+        log_csv.writerow(log_data)
         log_fh.flush()
 
         # ----- ITI -----
@@ -244,7 +255,6 @@ finally:
         stereo_snd.stop()
     if 'log_fh' in locals() and log_fh and not log_fh.closed:
         log_fh.close()
-        # ★変更点: 正しいファイルパスを表示
         print(f"ログを保存しました: {os.path.abspath(LOG_PATH)}")
     if 'win' in locals() and win:
         win.close()

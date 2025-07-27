@@ -40,8 +40,6 @@ from datetime import datetime
 class SoundSource:
     """音源の周波数スペクトルと基本位置を保持するクラス"""
     def __init__(self, freqs, base_pos):
-        # 周波数をリストとして受け取る
-        # もし数値が単体で渡されても、リストに変換して互換性を保つ
         if not isinstance(freqs, list):
             self.freqs = [freqs]
         else:
@@ -54,11 +52,15 @@ class SoundSource:
 # 'both'  : 音量差と時間差の両方
 PANNING_MODE = 'both'
 
+# スクロールモードのON/OFFを設定
+SCROLLING_MODE = True
+VIRTUAL_HEIGHT_MULTIPLIER = 2.0 # スクロールモード時の仮想空間の高さ（画面の何倍か）
+
 # 画面・ドット
 WIN_SIZE      = (1280, 720)  # ウィンドウ解像度
-N_DOTS        = 200          # 赤・緑それぞれのドット数
+N_DOTS        = 400          # 赤・緑それぞれのドット数
 DOT_SIZE      = 5            # ドット直径 [pix]
-FALL_SPEED    = 0            # 落下速度 [pix/s]
+FALL_SPEED    = 50           # 落下・スクロール速度 [pix/s]
 OSC_FREQ      = 0.24         # 横揺れ周波数 [Hz]
 OSC_AMP       = 60           # ドットの横揺れ振幅 [pix]
 
@@ -75,9 +77,9 @@ MIN_DISTANCE_GAIN = 0.05   # 距離が離れた際の最小ゲイン（音量が
 
 # SoundSourceオブジェクトを周波数のリスト(freqs)で定義
 SOUND_SOURCES = [
-#    SoundSource(freqs=[440.00, 880.00], base_pos=-25.0), # ラ(A4) とそのオクターブ上
+    SoundSource(freqs=[440.00, 880.00], base_pos=-25.0), # ラ(A4) とそのオクターブ上
     SoundSource(freqs=[523.25], base_pos=0.0),          # ド(C5) のみ
-#    SoundSource(freqs=[659.25, 1318.50], base_pos=25.0)   # ミ(E5) とそのオクターブ上
+    SoundSource(freqs=[659.25, 1318.50], base_pos=25.0)   # ミ(E5) とそのオクターブ上
 ]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
@@ -119,7 +121,13 @@ Y_MIN = -WIN_H / 2
 
 def init_positions():
     xpos = np.random.uniform(-WIN_W/2, WIN_W/2, N_DOTS)
-    ypos = np.random.uniform(-WIN_H/2, WIN_H/2, N_DOTS)
+    if SCROLLING_MODE:
+        # スクロールモードでは、より広い仮想空間にドットを配置
+        virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
+        ypos = np.random.uniform(-virtual_h/2, virtual_h/2, N_DOTS)
+    else:
+        # 通常モードでは画面内に配置
+        ypos = np.random.uniform(Y_MIN, Y_MAX, N_DOTS)
     return np.column_stack([xpos, ypos])
 
 
@@ -187,16 +195,11 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
         source_wave_left *= left_gain
         source_wave_right *= right_gain
 
-        # 距離による減衰を計算して適用
-        # リスナーと音源の3D距離を計算 (音源はz=0平面にあると仮定)
         distance = np.sqrt(source_pos_world**2 + LISTENER_POS_Z**2)
-        # 距離の2乗に反比例するゲインを計算
-        distance_gain = DISTANCE_ATTENUATION / (distance**2 + 1e-6) # +1e-6はゼロ除算防止
-        # 最小ゲインを保証し、最大を1.0にクリップ
+        distance_gain = DISTANCE_ATTENUATION / (distance**2 + 1e-6)
         final_distance_gain = MIN_DISTANCE_GAIN + distance_gain
         final_distance_gain = np.clip(final_distance_gain, 0.0, 1.0)
         
-        # 距離減衰ゲインを適用
         source_wave_left *= final_distance_gain
         source_wave_right *= final_distance_gain
 
@@ -224,7 +227,7 @@ try:
     log_fh = open(LOG_PATH, 'w', newline='', encoding='utf-8')
     log_csv = csv.writer(log_fh)
     header = [
-        'trial', 'panning_mode', 'condition', 'response', 'RT',
+        'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
         'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
         'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'audio_positions_world', 
         'world_space_min', 'world_space_max', 'sound_osc_amp_world', 
@@ -285,15 +288,51 @@ try:
             dt  = now - last_t
             last_t = now
 
-            red_current_pos[:, 1]   -= FALL_SPEED * dt
-            green_current_pos[:, 1] -= FALL_SPEED * dt
+            if SCROLLING_MODE:
+                virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
+                
+                # カメラのY座標を計算（時間と共に増加していく）
+                camera_y = ((now * FALL_SPEED) % virtual_h)
+                
+                # 描画用の座標を計算
+                temp_red_xys = red_current_pos.copy()
+                temp_red_xys[:, 1] -= camera_y
+                
+                temp_green_xys = green_current_pos.copy()
+                temp_green_xys[:, 1] -= camera_y
+                
+                # 座標を仮想空間の範囲にラップ（トーラス状に折り返し）
+                temp_red_xys[:, 1] = ((temp_red_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
+                temp_green_xys[:, 1] = ((temp_green_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
 
-            phase = 2 * np.pi * OSC_FREQ * now
-            x_osc_offset = OSC_AMP * np.sin(phase)
-            red_current_pos[:, 0]   = red_base_x + x_osc_offset
-            green_current_pos[:, 0] = green_base_x - x_osc_offset
-            
-            red_dots.xys, green_dots.xys = red_current_pos, green_current_pos
+                # X座標の横揺れを適用
+                phase = 2 * np.pi * OSC_FREQ * now
+                x_osc_offset = OSC_AMP * np.sin(phase)
+                temp_red_xys[:, 0] = red_base_x + x_osc_offset
+                temp_green_xys[:, 0] = green_base_x - x_osc_offset
+
+                red_dots.xys = temp_red_xys
+                green_dots.xys = temp_green_xys
+            else:
+                # 通常モードではドットが落下し、画面下でループする
+                red_current_pos[:, 1] -= FALL_SPEED * dt
+                green_current_pos[:, 1] -= FALL_SPEED * dt
+                
+                is_below_screen_red = red_current_pos[:, 1] < Y_MIN
+                red_current_pos[is_below_screen_red, 1] += WIN_H
+                
+                is_below_screen_green = green_current_pos[:, 1] < Y_MIN
+                green_current_pos[is_below_screen_green, 1] += WIN_H
+
+                # X座標の横揺れを適用
+                phase = 2 * np.pi * OSC_FREQ * now
+                x_osc_offset = OSC_AMP * np.sin(phase)
+                red_current_pos[:, 0] = red_base_x + x_osc_offset
+                green_current_pos[:, 0] = green_base_x - x_osc_offset
+                
+                red_dots.xys = red_current_pos
+                green_dots.xys = green_current_pos
+
             red_dots.draw()
             green_dots.draw()
             win.flip()
@@ -304,11 +343,10 @@ try:
         if not experiment_running:
             break
 
-        # ログに距離減衰パラメータを追加
         audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
         audio_pos_str = " | ".join([str(s.base_pos) for s in SOUND_SOURCES])
         log_data = [
-            trial_idx, PANNING_MODE, cond_type, participant_response, f"{rt:.3f}",
+            trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
             WIN_SIZE[0], WIN_SIZE[1], N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
             OSC_AMP, audio_freqs_str, audio_pos_str, WORLD_SPACE_MIN, WORLD_SPACE_MAX,
             OSC_AMP_WORLD, LISTENER_POS_Z, DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN,

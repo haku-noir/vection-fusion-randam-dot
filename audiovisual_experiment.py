@@ -24,7 +24,6 @@ prefs.hardware['audioLatencyMode'] = 3    # 低レイテンシ 0–4（3 がお�
 
 # ------------------------------------------------------------------
 # 1. 必要ライブラリのインポート
-#    （prefs 設定より後に行うこと）
 # ------------------------------------------------------------------
 from psychopy import sound, visual, core, event, constants
 import numpy as np
@@ -37,11 +36,16 @@ from datetime import datetime
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
 # ------------------------------------------------------------------
-# 音源の情報を保持するクラスを定義
+# 音源の情報を保持するクラス
 class SoundSource:
-    """音源の周波数と基本位置を保持するクラス"""
-    def __init__(self, freq, base_pos):
-        self.freq = freq
+    """音源の周波数スペクトルと基本位置を保持するクラス"""
+    def __init__(self, freqs, base_pos):
+        # 周波数をリストとして受け取る
+        # もし数値が単体で渡されても、リストに変換して互換性を保つ
+        if not isinstance(freqs, list):
+            self.freqs = [freqs]
+        else:
+            self.freqs = freqs
         self.base_pos = base_pos
 
 # ★★★ 音響モードを選択 ★★★
@@ -64,11 +68,16 @@ WORLD_SPACE_MIN = -100.0 # 世界空間の左端
 WORLD_SPACE_MAX = 100.0  # 世界空間の右端
 OSC_AMP_WORLD = 80.0     # 世界空間における音の振動の振幅
 
-# SoundSourceオブジェクトのリストを世界空間の座標で定義
+# 距離減衰に関するパラメータを追加
+LISTENER_POS_Z = 50.0      # リスナーのZ座標（音源平面からの距離）
+DISTANCE_ATTENUATION = 5000.0 # 距離減衰の係数（大きいほど減衰が緩やか）
+MIN_DISTANCE_GAIN = 0.05   # 距離が離れた際の最小ゲイン（音量が0にならないように）
+
+# SoundSourceオブジェクトを周波数のリスト(freqs)で定義
 SOUND_SOURCES = [
-    SoundSource(freq=440.00, base_pos=-25.0), # ラ(A4)
-    SoundSource(freq=523.25, base_pos=0.0),   # ド(C5)
-    SoundSource(freq=659.25, base_pos=25.0)    # ミ(E5)
+#    SoundSource(freqs=[440.00, 880.00], base_pos=-25.0), # ラ(A4) とそのオクターブ上
+    SoundSource(freqs=[523.25], base_pos=0.0),          # ド(C5) のみ
+#    SoundSource(freqs=[659.25, 1318.50], base_pos=25.0)   # ミ(E5) とそのオクターブ上
 ]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
@@ -124,7 +133,6 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     """
     t = np.linspace(0, TRIAL_DURATION, int(SAMPLE_RATE * TRIAL_DURATION), endpoint=False)
     
-    # 世界空間で音源グループの移動を計算
     base_positions = [s.base_pos for s in SOUND_SOURCES]
     min_base_pos = min(base_positions) if base_positions else 0
     max_base_pos = max(base_positions) if base_positions else 0
@@ -138,7 +146,6 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     predicted_left_edge = min_base_pos + group_shift_world
     predicted_right_edge = max_base_pos + group_shift_world
 
-    # 世界空間の最小・最大値を使ってはみ出し量を計算
     left_overhang = WORLD_SPACE_MIN - predicted_left_edge
     left_overhang[left_overhang < 0] = 0
     right_overhang = WORLD_SPACE_MAX - predicted_right_edge
@@ -153,9 +160,8 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     for source in SOUND_SOURCES:
         source_pos_world = source.base_pos + final_group_shift
         
-        # 世界空間座標をパンニング位置(-1.0から1.0)に線形変換
         world_range = WORLD_SPACE_MAX - WORLD_SPACE_MIN
-        if world_range == 0: world_range = 1 # ゼロ除算を避ける
+        if world_range == 0: world_range = 1
         final_pan = -1.0 + 2.0 * (source_pos_world - WORLD_SPACE_MIN) / world_range
 
         left_gain, right_gain = 1.0, 1.0
@@ -172,15 +178,40 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
         t_left = t - delay_L_s
         t_right = t - delay_R_s
         
-        wave_left = np.sin(2 * np.pi * source.freq * t_left) * left_gain
-        wave_right = np.sin(2 * np.pi * source.freq * t_right) * right_gain
+        source_wave_left = np.zeros_like(t)
+        source_wave_right = np.zeros_like(t)
+        for freq in source.freqs:
+            source_wave_left += np.sin(2 * np.pi * freq * t_left)
+            source_wave_right += np.sin(2 * np.pi * freq * t_right)
 
-        total_left_wave += wave_left
-        total_right_wave += wave_right
+        source_wave_left *= left_gain
+        source_wave_right *= right_gain
 
-    stereo = np.column_stack([total_left_wave, total_right_wave])
+        # 距離による減衰を計算して適用
+        # リスナーと音源の3D距離を計算 (音源はz=0平面にあると仮定)
+        distance = np.sqrt(source_pos_world**2 + LISTENER_POS_Z**2)
+        # 距離の2乗に反比例するゲインを計算
+        distance_gain = DISTANCE_ATTENUATION / (distance**2 + 1e-6) # +1e-6はゼロ除算防止
+        # 最小ゲインを保証し、最大を1.0にクリップ
+        final_distance_gain = MIN_DISTANCE_GAIN + distance_gain
+        final_distance_gain = np.clip(final_distance_gain, 0.0, 1.0)
+        
+        # 距離減衰ゲインを適用
+        source_wave_left *= final_distance_gain
+        source_wave_right *= final_distance_gain
+
+        if source.freqs:
+            source_wave_left /= len(source.freqs)
+            source_wave_right /= len(source.freqs)
+
+        total_left_wave += source_wave_left
+        total_right_wave += source_wave_right
+
     if SOUND_SOURCES:
-        stereo /= len(SOUND_SOURCES)
+        total_left_wave /= len(SOUND_SOURCES)
+        total_right_wave /= len(SOUND_SOURCES)
+        
+    stereo = np.column_stack([total_left_wave, total_right_wave])
     stereo *= 0.9
     
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
@@ -196,7 +227,9 @@ try:
         'trial', 'panning_mode', 'condition', 'response', 'RT',
         'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
         'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'audio_positions_world', 
-        'world_space_min', 'world_space_max', 'sound_osc_amp_world', 'sample_rate', 'max_itd_s'
+        'world_space_min', 'world_space_max', 'sound_osc_amp_world', 
+        'listener_pos_z', 'distance_attenuation', 'min_distance_gain',
+        'sample_rate', 'max_itd_s'
     ]
     log_csv.writerow(header)
 except IOError as e:
@@ -271,14 +304,15 @@ try:
         if not experiment_running:
             break
 
-        # ログに世界空間の最小・最大値を追加
-        audio_freqs_str = "-".join([str(s.freq) for s in SOUND_SOURCES])
-        audio_pos_str = "-".join([str(s.base_pos) for s in SOUND_SOURCES])
+        # ログに距離減衰パラメータを追加
+        audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
+        audio_pos_str = " | ".join([str(s.base_pos) for s in SOUND_SOURCES])
         log_data = [
             trial_idx, PANNING_MODE, cond_type, participant_response, f"{rt:.3f}",
             WIN_SIZE[0], WIN_SIZE[1], N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
             OSC_AMP, audio_freqs_str, audio_pos_str, WORLD_SPACE_MIN, WORLD_SPACE_MAX,
-            OSC_AMP_WORLD, SAMPLE_RATE, MAX_ITD_S
+            OSC_AMP_WORLD, LISTENER_POS_Z, DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN,
+            SAMPLE_RATE, MAX_ITD_S
         ]
         log_csv.writerow(log_data)
         log_fh.flush()

@@ -31,11 +31,19 @@ import csv
 import os
 import random
 from datetime import datetime
+import serial
+import threading
+import time
+from collections import deque
 
 
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
 # ------------------------------------------------------------------
+# M5Stackとのシリアル通信設定
+SERIAL_PORT = '/dev/cu.wchusbserial556F0046031' 
+BAUD_RATE = 115200
+
 # 音源の情報を保持するクラス
 class SoundSource:
     """音源の周波数スペクトルと基本位置を保持するクラス"""
@@ -91,10 +99,62 @@ ITI              = 1.0       # 刺激間インターバル [s]
 # ログ
 LOG_DIR = PANNING_MODE
 os.makedirs(LOG_DIR, exist_ok=True)
-
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-LOG_FILENAME = f'experiment_log_{timestamp}.csv'
-LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
+MAIN_LOG_FILENAME = f'{timestamp}_experiment_log.csv'
+MAIN_LOG_PATH = os.path.join(LOG_DIR, MAIN_LOG_FILENAME)
+
+# M5Stackのデータをバックグラウンドで読み込むためのクラス
+class SerialReader(threading.Thread):
+    def __init__(self, port, baudrate):
+        super(SerialReader, self).__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.serial_connection = None
+        self.running = False
+        self.lock = threading.Lock()
+        self.data_buffer = deque() # スレッドセーフなdequeを使用
+        self.daemon = True # メインスレッド終了時にこのスレッドも終了させる
+
+    def run(self):
+        try:
+            self.serial_connection = serial.Serial(self.port, self.baudrate, timeout=1)
+            time.sleep(2) # 接続が安定するのを待つ
+            self.running = True
+            print(f"Successfully connected to M5Stack on {self.port}")
+        except serial.SerialException as e:
+            print(f"Error: Could not connect to M5Stack on {self.port}. {e}")
+            print("Accelerometer data will not be recorded.")
+            self.running = False
+            return
+
+        while self.running:
+            try:
+                line = self.serial_connection.readline().decode('utf-8').strip()
+                if line:
+                    # X,Y,Zデータをパースしてバッファに追加
+                    parts = [float(p) for p in line.split(',')]
+                    if len(parts) == 3:
+                        with self.lock:
+                            self.data_buffer.append(tuple(parts))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            except serial.SerialException:
+                self.running = False
+                break
+
+        if self.serial_connection and self.serial_connection.is_open:
+            self.serial_connection.close()
+        print("SerialReader thread stopped.")
+
+    def get_all_data(self):
+        """バッファから全てのデータを取得し、バッファを空にする"""
+        with self.lock:
+            data = list(self.data_buffer)
+            self.data_buffer.clear()
+            return data
+
+    def stop(self):
+        self.running = False
 
 
 # ------------------------------------------------------------------
@@ -224,8 +284,8 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
 # 5. ログファイルオープン
 # ------------------------------------------------------------------
 try:
-    log_fh = open(LOG_PATH, 'w', newline='', encoding='utf-8')
-    log_csv = csv.writer(log_fh)
+    main_log_fh = open(MAIN_LOG_PATH, 'w', newline='', encoding='utf-8')
+    main_log_csv = csv.writer(main_log_fh)
     header = [
         'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
         'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
@@ -234,9 +294,9 @@ try:
         'listener_pos_z', 'distance_attenuation', 'min_distance_gain',
         'sample_rate', 'max_itd_s'
     ]
-    log_csv.writerow(header)
+    main_log_csv.writerow(header)
 except IOError as e:
-    print(f"ログファイルを開けませんでした: {LOG_PATH}")
+    print(f"ログファイルを開けませんでした: {MAIN_LOG_PATH}")
     print(f"エラー: {e}")
     core.quit()
 
@@ -244,6 +304,17 @@ except IOError as e:
 # ------------------------------------------------------------------
 # 6. メイン実験ループ
 # ------------------------------------------------------------------
+# シリアル通信スレッドを開始
+serial_reader = SerialReader(SERIAL_PORT, BAUD_RATE)
+serial_reader.start()
+
+# スレッドが起動し、シリアルポートに接続するのを待つ
+print("Waiting for serial connection...")
+time.sleep(2.5) # Arduino側の準備とSerialReaderのsleep(2)より少し長く待つ
+
+if not serial_reader.running:
+    print("Failed to start serial reader. Continuing without accelerometer data.")
+
 experiment_running = True
 trial_idx = 1
 response_mapping = {'r': 'red', 'g': 'green'}
@@ -254,6 +325,20 @@ try:
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
         
+        # 試行ごとに加速度ログファイルを作成
+        accel_log_fh = None
+        accel_log_csv = None
+        if serial_reader.running:
+            try:
+                accel_log_filename = f'{timestamp}_accel_log_trial_{trial_idx}.csv'
+                accel_log_path = os.path.join(LOG_DIR, accel_log_filename)
+                accel_log_fh = open(accel_log_path, 'w', newline='', encoding='utf-8')
+                accel_log_csv = csv.writer(accel_log_fh)
+                accel_log_csv.writerow(['psychopy_time', 'accel_x', 'accel_y', 'accel_z'])
+            except IOError as e:
+                print(f"加速度ログファイルを作成できませんでした: {e}")
+                accel_log_fh = None # エラーの場合は記録しない
+
         # ----- ドット位置と時間の初期化 -----
         red_current_pos, green_current_pos = init_positions(), init_positions()
         red_base_x, green_base_x = red_current_pos[:, 0].copy(), green_current_pos[:, 0].copy()
@@ -284,14 +369,20 @@ try:
                     participant_response = response_mapping.get(key_name, 'invalid')
                 break
             
+            # 毎フレーム、加速度データを取得してログに記録
+            if accel_log_fh:
+                current_time = trial_clock.getTime()
+                accel_data_points = serial_reader.get_all_data()
+                for data_point in accel_data_points:
+                    accel_log_csv.writerow([f"{current_time:.6f}", data_point[0], data_point[1], data_point[2]])
+
             now = trial_clock.getTime()
             dt  = now - last_t
             last_t = now
 
             if SCROLLING_MODE:
                 virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
-                
-                # カメラのY座標を計算（時間と共に増加していく）
+                # カメラのY座標を計算（時間と増加していく）
                 camera_y = ((now * FALL_SPEED) % virtual_h)
                 
                 # 描画用の座標を計算
@@ -340,9 +431,14 @@ try:
         if stereo_snd and stereo_snd.status != constants.STOPPED:
             stereo_snd.stop()
 
+        # 試行ごとの加速度ログファイルを閉じる
+        if accel_log_fh:
+            accel_log_fh.close()
+
         if not experiment_running:
             break
 
+        # メインログに記録
         audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
         audio_pos_str = " | ".join([str(s.base_pos) for s in SOUND_SOURCES])
         log_data = [
@@ -352,8 +448,8 @@ try:
             OSC_AMP_WORLD, LISTENER_POS_Z, DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN,
             SAMPLE_RATE, MAX_ITD_S
         ]
-        log_csv.writerow(log_data)
-        log_fh.flush()
+        main_log_csv.writerow(log_data)
+        main_log_fh.flush()
 
         # ----- ITI -----
         fixation = visual.TextStim(win, text='+', color='white', height=30)
@@ -372,11 +468,16 @@ try:
 except Exception as e:
     print(f"エラーが発生しました: {e}")
 finally:
+    # スレッドとシリアルポートを安全に閉じる
+    if serial_reader:
+        serial_reader.stop()
     if stereo_snd and stereo_snd.status != constants.STOPPED:
         stereo_snd.stop()
-    if 'log_fh' in locals() and log_fh and not log_fh.closed:
-        log_fh.close()
-        print(f"ログを保存しました: {os.path.abspath(LOG_PATH)}")
+    if 'main_log_fh' in locals() and main_log_fh and not main_log_fh.closed:
+        main_log_fh.close()
+        print(f"メインログを保存しました: {os.path.abspath(MAIN_LOG_PATH)}")
+    if 'accel_log_fh' in locals() and accel_log_fh and not accel_log_fh.closed:
+        accel_log_fh.close() # 念のため閉じる
     if 'win' in locals() and win:
         win.close()
     core.quit()

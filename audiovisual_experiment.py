@@ -160,7 +160,7 @@ class SerialReader(threading.Thread):
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
-win = visual.Window(size=WIN_SIZE, color=[-1, -1, -1], units='pix',
+win = visual.Window(size=WIN_SIZE, color=[0, 0, 0], units='pix',
                     fullscr=False, allowGUI=True)
 
 def create_dot_stim(color_rgb):

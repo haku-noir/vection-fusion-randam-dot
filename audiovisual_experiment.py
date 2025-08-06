@@ -35,13 +35,15 @@ import serial
 import threading
 import time
 from collections import deque
+import pandas as pd
+import matplotlib.pyplot as plt
 
 
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
 # ------------------------------------------------------------------
 # M5Stackとのシリアル通信設定
-SERIAL_PORT = '/dev/cu.wchusbserial556F0046031' 
+SERIAL_PORT = '/dev/cu.M5Stack-Accel' 
 BAUD_RATE = 115200
 
 # 音源の情報を保持するクラス
@@ -65,12 +67,12 @@ SCROLLING_MODE = True
 VIRTUAL_HEIGHT_MULTIPLIER = 2.0 # スクロールモード時の仮想空間の高さ（画面の何倍か）
 
 # 画面・ドット
-WIN_SIZE      = (1280, 720)  # ウィンドウ解像度
-N_DOTS        = 400          # 赤・緑それぞれのドット数
-DOT_SIZE      = 5            # ドット直径 [pix]
-FALL_SPEED    = 50           # 落下・スクロール速度 [pix/s]
-OSC_FREQ      = 0.24         # 横揺れ周波数 [Hz]
-OSC_AMP       = 60           # ドットの横揺れ振幅 [pix]
+WIN_SIZE      = (3840, 2160)  # ウィンドウ解像度
+N_DOTS        = 1500          # 赤・緑それぞれのドット数
+DOT_SIZE      = 15            # ドット直径 [pix]
+FALL_SPEED    = 750           # 落下・スクロール速度 [pix/s]
+OSC_FREQ      = 0.1         # 横揺れ周波数 [Hz]
+OSC_AMP       = 500           # ドットの横揺れ振幅 [pix]
 
 # 音
 # 仮想的な「世界空間」を最小値と最大値で定義
@@ -161,7 +163,7 @@ class SerialReader(threading.Thread):
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
 win = visual.Window(size=WIN_SIZE, color=[0, 0, 0], units='pix',
-                    fullscr=False, allowGUI=True)
+                    fullscr=True, allowGUI=True) # フルスクリーンに変更
 
 def create_dot_stim(color_rgb):
     return visual.ElementArrayStim(
@@ -175,12 +177,12 @@ GREEN_RGB = [-1, 1, -1]
 red_dots   = create_dot_stim(ORANGE_RGB)
 green_dots = create_dot_stim(GREEN_RGB)
 
-WIN_W, WIN_H = WIN_SIZE
+WIN_W, WIN_H = win.size
 Y_MAX = WIN_H / 2
 Y_MIN = -WIN_H / 2
 
 def init_positions():
-    xpos = np.random.uniform(-WIN_W/2, WIN_W/2, N_DOTS)
+    xpos = np.random.uniform(-WIN_W/2 - OSC_AMP, WIN_W/2 + OSC_AMP, N_DOTS)
     if SCROLLING_MODE:
         # スクロールモードでは、より広い仮想空間にドットを配置
         virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
@@ -279,6 +281,39 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
 
+# 加速度グラフを保存
+def save_acceleration_graph(log_path, trial_idx):
+    """加速度ログを読み込み、グラフとして保存する"""
+    try:
+        # CSVファイルを読み込む
+        df = pd.read_csv(log_path)
+        if df.empty:
+            print(f"Trial {trial_idx}: Accelerometer log is empty. Skipping graph.")
+            return
+
+        # グラフを作成
+        fig, ax = plt.subplots(figsize=(15, 7))
+        ax.plot(df['psychopy_time'], df['accel_x'], label='X-axis', alpha=0.8)
+        ax.plot(df['psychopy_time'], df['accel_y'], label='Y-axis', alpha=0.8)
+        ax.plot(df['psychopy_time'], df['accel_z'], label='Z-axis', alpha=0.8)
+
+        # ラベルとタイトルを設定
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Acceleration (m/s^2)")
+        ax.set_title(f"Trial {trial_idx}: Accelerometer Data")
+        ax.legend()
+        ax.grid(True)
+
+        # グラフをファイルとして保存
+        graph_path = log_path.replace('.csv', '.png')
+        plt.savefig(graph_path)
+        plt.close(fig) # メモリを解放
+        print(f"Saved accelerometer graph to {graph_path}")
+
+    except FileNotFoundError:
+        print(f"Error: Could not find log file {log_path} to create graph.")
+    except Exception as e:
+        print(f"An error occurred while creating graph for trial {trial_idx}: {e}")
 
 # ------------------------------------------------------------------
 # 5. ログファイルオープン
@@ -328,6 +363,7 @@ try:
         # 試行ごとに加速度ログファイルを作成
         accel_log_fh = None
         accel_log_csv = None
+        accel_log_path = None
         if serial_reader.running:
             try:
                 accel_log_filename = f'{timestamp}_accel_log_trial_{trial_idx}.csv'
@@ -337,8 +373,8 @@ try:
                 accel_log_csv.writerow(['psychopy_time', 'accel_x', 'accel_y', 'accel_z'])
             except IOError as e:
                 print(f"加速度ログファイルを作成できませんでした: {e}")
-                accel_log_fh = None # エラーの場合は記録しない
-
+                accel_log_fh = None
+        
         # ----- ドット位置と時間の初期化 -----
         red_current_pos, green_current_pos = init_positions(), init_positions()
         red_base_x, green_base_x = red_current_pos[:, 0].copy(), green_current_pos[:, 0].copy()
@@ -353,7 +389,7 @@ try:
         # ----- 刺激提示 & 応答取得 -----
         participant_response = 'no_response'
         rt = -1.0
-
+        
         trial_clock = core.Clock()
         stereo_snd.play()
         trial_clock.reset()
@@ -368,7 +404,7 @@ try:
                 else:
                     participant_response = response_mapping.get(key_name, 'invalid')
                 break
-            
+
             # 毎フレーム、加速度データを取得してログに記録
             if accel_log_fh:
                 current_time = trial_clock.getTime()
@@ -382,7 +418,7 @@ try:
 
             if SCROLLING_MODE:
                 virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
-                # カメラのY座標を計算（時間と増加していく）
+                # カメラのY座標を計算（時間と共に増加していく）
                 camera_y = ((now * FALL_SPEED) % virtual_h)
                 
                 # 描画用の座標を計算
@@ -434,6 +470,7 @@ try:
         # 試行ごとの加速度ログファイルを閉じる
         if accel_log_fh:
             accel_log_fh.close()
+            save_acceleration_graph(accel_log_path, trial_idx)
 
         if not experiment_running:
             break
@@ -443,7 +480,7 @@ try:
         audio_pos_str = " | ".join([str(s.base_pos) for s in SOUND_SOURCES])
         log_data = [
             trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
-            WIN_SIZE[0], WIN_SIZE[1], N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
+            WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
             OSC_AMP, audio_freqs_str, audio_pos_str, WORLD_SPACE_MIN, WORLD_SPACE_MAX,
             OSC_AMP_WORLD, LISTENER_POS_Z, DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN,
             SAMPLE_RATE, MAX_ITD_S

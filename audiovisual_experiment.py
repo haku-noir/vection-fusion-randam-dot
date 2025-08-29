@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 # 2. 実験パラメータ（自由に変更可）
 # ------------------------------------------------------------------
 # M5Stackとのシリアル通信設定
-SERIAL_PORT = '/dev/cu.M5Stack-Accel' 
+SERIAL_PORT = '/dev/cu.wchusbserial556F0046031'
 BAUD_RATE = 115200
 
 # 音源の情報を保持するクラス
@@ -67,10 +67,10 @@ SCROLLING_MODE = True
 VIRTUAL_HEIGHT_MULTIPLIER = 2.0 # スクロールモード時の仮想空間の高さ（画面の何倍か）
 
 # 画面・ドット
-WIN_SIZE      = (3840, 2160)  # ウィンドウ解像度
-N_DOTS        = 1500          # 赤・緑それぞれのドット数
+WIN_SIZE      = (1920, 1080)  # ウィンドウ解像度
+N_DOTS        = 3000          # 赤・緑それぞれのドット数
 DOT_SIZE      = 15            # ドット直径 [pix]
-FALL_SPEED    = 750           # 落下・スクロール速度 [pix/s]
+FALL_SPEED    = 350           # 落下・スクロール速度 [pix/s]
 OSC_FREQ      = 0.1         # 横揺れ周波数 [Hz]
 OSC_AMP       = 500           # ドットの横揺れ振幅 [pix]
 
@@ -87,15 +87,15 @@ MIN_DISTANCE_GAIN = 0.05   # 距離が離れた際の最小ゲイン（音量が
 
 # SoundSourceオブジェクトを周波数のリスト(freqs)で定義
 SOUND_SOURCES = [
-    SoundSource(freqs=[440.00, 880.00], base_pos=-25.0), # ラ(A4) とそのオクターブ上
+    # SoundSource(freqs=[440.00, 880.00], base_pos=-25.0), # ラ(A4) とそのオクターブ上
     SoundSource(freqs=[523.25], base_pos=0.0),          # ド(C5) のみ
-    SoundSource(freqs=[659.25, 1318.50], base_pos=25.0)   # ミ(E5) とそのオクターブ上
+    # SoundSource(freqs=[659.25, 1318.50], base_pos=25.0)   # ミ(E5) とそのオクターブ上
 ]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
 
 # 試行
-TRIAL_DURATION   = 30.0      # 各試行の刺激掲示時間 [s]
+TRIAL_DURATION   = 60.0      # 各試行の刺激掲示時間 [s]
 ITI              = 1.0       # 刺激間インターバル [s]
 
 # ログ
@@ -163,7 +163,7 @@ class SerialReader(threading.Thread):
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
 win = visual.Window(size=WIN_SIZE, color=[0, 0, 0], units='pix',
-                    fullscr=True, allowGUI=True) # フルスクリーンに変更
+                    fullscr=False, allowGUI=True) # フルスクリーンに変更
 
 def create_dot_stim(color_rgb):
     return visual.ElementArrayStim(
@@ -202,13 +202,13 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     振動させ、ステレオ音響を生成する。
     """
     t = np.linspace(0, TRIAL_DURATION, int(SAMPLE_RATE * TRIAL_DURATION), endpoint=False)
-    
+
     base_positions = [s.base_pos for s in SOUND_SOURCES]
     min_base_pos = min(base_positions) if base_positions else 0
     max_base_pos = max(base_positions) if base_positions else 0
 
     osc_wave = np.sin(2 * np.pi * OSC_FREQ * t)
-    
+
     group_shift_world = OSC_AMP_WORLD * osc_wave
     if not sync_to_red:
         group_shift_world *= -1
@@ -229,7 +229,7 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
 
     for source in SOUND_SOURCES:
         source_pos_world = source.base_pos + final_group_shift
-        
+
         world_range = WORLD_SPACE_MAX - WORLD_SPACE_MIN
         if world_range == 0: world_range = 1
         final_pan = -1.0 + 2.0 * (source_pos_world - WORLD_SPACE_MIN) / world_range
@@ -240,14 +240,14 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
         if mode in ['volume', 'both']:
             left_gain = np.sqrt(0.5 * (1 - final_pan))
             right_gain = np.sqrt(0.5 * (1 + final_pan))
-            
+
         if mode in ['itd', 'both']:
             delay_L_s = np.maximum(0, final_pan) * MAX_ITD_S
             delay_R_s = np.maximum(0, -final_pan) * MAX_ITD_S
 
         t_left = t - delay_L_s
         t_right = t - delay_R_s
-        
+
         source_wave_left = np.zeros_like(t)
         source_wave_right = np.zeros_like(t)
         for freq in source.freqs:
@@ -261,7 +261,7 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
         distance_gain = DISTANCE_ATTENUATION / (distance**2 + 1e-6)
         final_distance_gain = MIN_DISTANCE_GAIN + distance_gain
         final_distance_gain = np.clip(final_distance_gain, 0.0, 1.0)
-        
+
         source_wave_left *= final_distance_gain
         source_wave_right *= final_distance_gain
 
@@ -275,10 +275,10 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     if SOUND_SOURCES:
         total_left_wave /= len(SOUND_SOURCES)
         total_right_wave /= len(SOUND_SOURCES)
-        
+
     stereo = np.column_stack([total_left_wave, total_right_wave])
     stereo *= 0.9
-    
+
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
 
 # 加速度グラフを保存
@@ -359,7 +359,7 @@ try:
     while experiment_running:
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
-        
+
         # 試行ごとに加速度ログファイルを作成
         accel_log_fh = None
         accel_log_csv = None
@@ -374,7 +374,7 @@ try:
             except IOError as e:
                 print(f"加速度ログファイルを作成できませんでした: {e}")
                 accel_log_fh = None
-        
+
         # ----- ドット位置と時間の初期化 -----
         red_current_pos, green_current_pos = init_positions(), init_positions()
         red_base_x, green_base_x = red_current_pos[:, 0].copy(), green_current_pos[:, 0].copy()
@@ -389,14 +389,14 @@ try:
         # ----- 刺激提示 & 応答取得 -----
         participant_response = 'no_response'
         rt = -1.0
-        
+
         trial_clock = core.Clock()
         stereo_snd.play()
         trial_clock.reset()
 
         while trial_clock.getTime() < TRIAL_DURATION:
             keys = event.getKeys(keyList=['r', 'g', 'escape'], timeStamped=trial_clock)
-            
+
             if keys:
                 key_name, rt = keys[0]
                 if key_name == 'escape':
@@ -420,14 +420,14 @@ try:
                 virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
                 # カメラのY座標を計算（時間と共に増加していく）
                 camera_y = ((now * FALL_SPEED) % virtual_h)
-                
+
                 # 描画用の座標を計算
                 temp_red_xys = red_current_pos.copy()
                 temp_red_xys[:, 1] -= camera_y
-                
+
                 temp_green_xys = green_current_pos.copy()
                 temp_green_xys[:, 1] -= camera_y
-                
+
                 # 座標を仮想空間の範囲にラップ（トーラス状に折り返し）
                 temp_red_xys[:, 1] = ((temp_red_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
                 temp_green_xys[:, 1] = ((temp_green_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
@@ -444,10 +444,10 @@ try:
                 # 通常モードではドットが落下し、画面下でループする
                 red_current_pos[:, 1] -= FALL_SPEED * dt
                 green_current_pos[:, 1] -= FALL_SPEED * dt
-                
+
                 is_below_screen_red = red_current_pos[:, 1] < Y_MIN
                 red_current_pos[is_below_screen_red, 1] += WIN_H
-                
+
                 is_below_screen_green = green_current_pos[:, 1] < Y_MIN
                 green_current_pos[is_below_screen_green, 1] += WIN_H
 
@@ -456,7 +456,7 @@ try:
                 x_osc_offset = OSC_AMP * np.sin(phase)
                 red_current_pos[:, 0] = red_base_x + x_osc_offset
                 green_current_pos[:, 0] = green_base_x - x_osc_offset
-                
+
                 red_dots.xys = red_current_pos
                 green_dots.xys = green_current_pos
 

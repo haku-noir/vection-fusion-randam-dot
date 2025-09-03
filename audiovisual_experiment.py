@@ -31,7 +31,7 @@ import csv
 import os
 import random
 from datetime import datetime
-import serial
+import socket
 import threading
 import time
 from collections import deque
@@ -42,9 +42,10 @@ import matplotlib.pyplot as plt
 # ------------------------------------------------------------------
 # 2. 実験パラメータ（自由に変更可）
 # ------------------------------------------------------------------
-# M5Stackとのシリアル通信設定
-SERIAL_PORT = '/dev/cu.wchusbserial556F0046031'
-BAUD_RATE = 115200
+# M5StackとのWiFi通信設定 - 実際の環境に合わせて変更してください
+M5_IP = '192.168.1.146'  # M5StackのIPアドレス（M5Stackの画面で確認して設定）
+M5_PORT = 12346          # M5Stackが待機するポート
+PC_PORT = 12345          # PCが待機するポート
 
 # 音源の情報を保持するクラス
 class SoundSource:
@@ -105,55 +106,127 @@ timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 MAIN_LOG_FILENAME = f'{timestamp}_experiment_log.csv'
 MAIN_LOG_PATH = os.path.join(LOG_DIR, MAIN_LOG_FILENAME)
 
-# M5Stackのデータをバックグラウンドで読み込むためのクラス
-class SerialReader(threading.Thread):
-    def __init__(self, port, baudrate):
-        super(SerialReader, self).__init__()
-        self.port = port
-        self.baudrate = baudrate
-        self.serial_connection = None
+# M5Stackとの無線通信を管理するクラス
+class UDPCommunicator(threading.Thread):
+    def __init__(self, m5_ip, m5_port, pc_port):
+        super(UDPCommunicator, self).__init__()
+        self.m5_ip = m5_ip
+        self.m5_port = m5_port
+        self.pc_port = pc_port
+        self.socket = None
         self.running = False
         self.lock = threading.Lock()
-        self.data_buffer = deque() # スレッドセーフなdequeを使用
-        self.daemon = True # メインスレッド終了時にこのスレッドも終了させる
+        self.accel_data_buffer = []  # 受信した加速度データを保存
+        self.daemon = True
+        self.measurement_active = False
+        self.data_reception_complete = False  # データ受信完了フラグ
+        self.data_reception_start_time = 0    # データ受信開始時刻
 
     def run(self):
         try:
-            self.serial_connection = serial.Serial(self.port, self.baudrate, timeout=1)
-            time.sleep(2) # 接続が安定するのを待つ
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.socket.bind(('0.0.0.0', self.pc_port))
+            self.socket.settimeout(1.0)
             self.running = True
-            print(f"Successfully connected to M5Stack on {self.port}")
-        except serial.SerialException as e:
-            print(f"Error: Could not connect to M5Stack on {self.port}. {e}")
-            print("Accelerometer data will not be recorded.")
+            print(f"UDP communicator started on port {self.pc_port}")
+        except Exception as e:
+            print(f"Error: Could not start UDP communicator. {e}")
             self.running = False
             return
 
         while self.running:
             try:
-                line = self.serial_connection.readline().decode('utf-8').strip()
-                if line:
-                    # X,Y,Zデータをパースしてバッファに追加
-                    parts = [float(p) for p in line.split(',')]
-                    if len(parts) == 3:
-                        with self.lock:
-                            self.data_buffer.append(tuple(parts))
-            except (ValueError, UnicodeDecodeError):
+                data, addr = self.socket.recvfrom(4096)
+                message = data.decode('utf-8').strip()
+
+                if message == "MEASUREMENT_STARTED":
+                    print("M5Stack confirmed measurement start")
+                elif message == "MEASUREMENT_STOPPED":
+                    print("M5Stack confirmed measurement stop")
+                elif message == "DATA_START":
+                    with self.lock:
+                        self.accel_data_buffer.clear()
+                        self.data_reception_complete = False
+                        self.data_reception_start_time = time.time()
+                    print("Starting to receive acceleration data...")
+                elif message == "DATA_END":
+                    with self.lock:
+                        self.data_reception_complete = True
+                    print(f"Data reception completed. Received {len(self.accel_data_buffer)} data points")
+                elif "|" in message:  # データチャンク
+                    self.parse_accel_data(message)
+
+            except socket.timeout:
                 continue
-            except serial.SerialException:
-                self.running = False
-                break
+            except Exception as e:
+                if self.running:
+                    print(f"UDP receive error: {e}")
 
-        if self.serial_connection and self.serial_connection.is_open:
-            self.serial_connection.close()
-        print("SerialReader thread stopped.")
+        if self.socket:
+            self.socket.close()
+        print("UDPCommunicator thread stopped.")
 
-    def get_all_data(self):
-        """バッファから全てのデータを取得し、バッファを空にする"""
+    def parse_accel_data(self, message):
+        """受信したデータチャンクを解析して加速度データに変換"""
+        try:
+            with self.lock:
+                data_entries = message.split("|")
+                for entry in data_entries:
+                    parts = entry.split(",")
+                    if len(parts) == 4:
+                        timestamp = int(parts[0])  # マイクロ秒
+                        x = float(parts[1])
+                        y = float(parts[2])
+                        z = float(parts[3])
+                        self.accel_data_buffer.append((timestamp, x, y, z))
+        except Exception as e:
+            print(f"Error parsing acceleration data: {e}")
+
+    def send_command(self, command):
+        """M5Stackにコマンドを送信"""
+        try:
+            if self.socket:
+                self.socket.sendto(command.encode('utf-8'), (self.m5_ip, self.m5_port))
+                print(f"Sent command: {command}")
+                return True
+        except Exception as e:
+            print(f"Error sending command: {e}")
+        return False
+
+    def start_measurement(self):
+        """測定開始コマンドを送信"""
+        self.measurement_active = True
+        return self.send_command("START_MEASUREMENT")
+
+    def stop_measurement(self):
+        """測定停止コマンドを送信"""
+        self.measurement_active = False
+        return self.send_command("STOP_MEASUREMENT")
+
+    def request_data(self):
+        """データ送信要求コマンドを送信"""
+        return self.send_command("SEND_DATA")
+
+    def wait_for_data_reception(self, timeout=10.0):
+        """データ受信完了を待機する（タイムアウト付き）"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            with self.lock:
+                if self.data_reception_complete:
+                    return True
+            time.sleep(0.1)  # 100ms間隔でチェック
+        print(f"Warning: Data reception timeout after {timeout} seconds")
+        return False
+
+    def get_accel_data(self):
+        """収集した加速度データを取得"""
         with self.lock:
-            data = list(self.data_buffer)
-            self.data_buffer.clear()
-            return data
+            return list(self.accel_data_buffer)
+
+    def clear_data(self):
+        """データバッファをクリア"""
+        with self.lock:
+            self.accel_data_buffer.clear()
 
     def stop(self):
         self.running = False
@@ -281,16 +354,48 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
 
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
 
-# 加速度グラフを保存
-def save_acceleration_graph(log_path, trial_idx):
-    """加速度ログとドット座標を読み込み、グラフとして保存する"""
+# 加速度グラフを保存（修正版）
+def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
+    """WiFi経由で受信した加速度データとドット座標からグラフを生成"""
     try:
-        df = pd.read_csv(log_path)
-        if df.empty:
-            print(f"Trial {trial_idx}: Log file is empty. Skipping graph.")
+        if not accel_data or not timestamps:
+            print(f"Trial {trial_idx}: No data available. Skipping graph.")
             return
 
-        # グラフと左側のY軸（加速度）を作成
+        # DataFrameを作成
+        df_data = []
+
+        # 加速度データを時間でソート
+        accel_data_sorted = sorted(accel_data, key=lambda x: x[0])
+
+        # ドット位置データを加速度データに同期
+        for i, (timestamp_us, x, y, z) in enumerate(accel_data_sorted):
+            timestamp_s = timestamp_us / 1000000.0  # マイクロ秒を秒に変換
+
+            # 最も近い時刻のドット位置を見つける
+            closest_idx = min(range(len(timestamps)), 
+                             key=lambda i: abs(timestamps[i] - timestamp_s))
+
+            red_pos = red_dot_positions[closest_idx] if closest_idx < len(red_dot_positions) else [0, 0]
+            green_pos = green_dot_positions[closest_idx] if closest_idx < len(green_dot_positions) else [0, 0]
+
+            df_data.append([
+                timestamp_s, x, y, z,
+                red_pos[0], red_pos[1],
+                green_pos[0], green_pos[1]
+            ])
+
+        df = pd.DataFrame(df_data, columns=[
+            'psychopy_time', 'accel_x', 'accel_y', 'accel_z',
+            'red_dot_mean_x', 'red_dot_mean_y', 
+            'green_dot_mean_x', 'green_dot_mean_y'
+        ])
+
+        if df.empty:
+            print(f"Trial {trial_idx}: DataFrame is empty. Skipping graph.")
+            return
+
+        # グラフを作成
         fig, ax1 = plt.subplots(figsize=(15, 8))
 
         # 加速度データをプロット
@@ -304,33 +409,36 @@ def save_acceleration_graph(log_path, trial_idx):
 
         # 右側のY軸（ドットのX座標）を作成
         ax2 = ax1.twinx()
-
-        # ドットの平均X座標をプロット
         ax2.plot(df['psychopy_time'], df['red_dot_mean_x'], label='Red Dot Mean X', color='orange', linestyle='--')
         ax2.plot(df['psychopy_time'], df['green_dot_mean_x'], label='Green Dot Mean X', color='green', linestyle='--')
         ax2.set_ylabel("Dot Mean X Position (pixels)", color='black')
         ax2.tick_params(axis='y', labelcolor='black')
 
-        # グラフ全体のタイトルを設定
-        plt.title(f"Trial {trial_idx}: Accelerometer Data and Dot Position")
+        plt.title(f"Trial {trial_idx}: Wireless Accelerometer Data and Dot Position")
 
-        # 左右のY軸の凡例を結合して表示
+        # 凡例を結合
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax2.legend(lines1 + lines2, labels1 + labels2, loc='best')
 
-        fig.tight_layout() # レイアウトを調整
+        fig.tight_layout()
 
-        # グラフをファイルとして保存
-        graph_path = log_path.replace('.csv', '.png')
+        # グラフとCSVを保存
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.png')
+        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.csv')
+
         plt.savefig(graph_path)
-        plt.close(fig) # メモリを解放
-        print(f"Saved data graph to {graph_path}")
+        plt.close(fig)
 
-    except FileNotFoundError:
-        print(f"Error: Could not find log file {log_path} to create graph.")
+        # CSVファイルも保存
+        df.to_csv(csv_path, index=False)
+
+        print(f"Saved graph to {graph_path}")
+        print(f"Saved data to {csv_path}")
+
     except Exception as e:
-        print(f"An error occurred while creating graph for trial {trial_idx}: {e}")
+        print(f"Error creating graph for trial {trial_idx}: {e}")
 
 # ------------------------------------------------------------------
 # 5. ログファイルオープン
@@ -356,16 +464,16 @@ except IOError as e:
 # ------------------------------------------------------------------
 # 6. メイン実験ループ
 # ------------------------------------------------------------------
-# シリアル通信スレッドを開始
-serial_reader = SerialReader(SERIAL_PORT, BAUD_RATE)
-serial_reader.start()
+# UDP通信スレッドを開始
+udp_comm = UDPCommunicator(M5_IP, M5_PORT, PC_PORT)
+udp_comm.start()
 
-# スレッドが起動し、シリアルポートに接続するのを待つ
-print("Waiting for serial connection...")
-time.sleep(2.5) # Arduino側の準備とSerialReaderのsleep(2)より少し長く待つ
+# 通信の確立を待つ
+print("Waiting for UDP connection...")
+time.sleep(2.0)
 
-if not serial_reader.running:
-    print("Failed to start serial reader. Continuing without accelerometer data.")
+if not udp_comm.running:
+    print("Failed to start UDP communicator. Continuing without accelerometer data.")
 
 experiment_running = True
 trial_idx = 1
@@ -377,22 +485,10 @@ try:
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
 
-        # 試行ごとに加速度ログファイルを作成
-        accel_log_fh = None
-        accel_log_csv = None
-        accel_log_path = None
-        if serial_reader.running:
-            try:
-                accel_log_filename = f'{timestamp}_accel_log_trial_{trial_idx}.csv'
-                accel_log_path = os.path.join(LOG_DIR, accel_log_filename)
-                accel_log_fh = open(accel_log_path, 'w', newline='', encoding='utf-8')
-                accel_log_csv = csv.writer(accel_log_fh)
-                accel_log_csv.writerow(['psychopy_time', 'accel_x', 'accel_y', 'accel_z',
-                                        'red_dot_mean_x', 'red_dot_mean_y', 
-                                        'green_dot_mean_x', 'green_dot_mean_y'])
-            except IOError as e:
-                print(f"加速度ログファイルを作成できませんでした: {e}")
-                accel_log_fh = None
+        # ドット位置と時間の履歴を保存するリスト
+        red_dot_positions = []
+        green_dot_positions = []
+        timestamps = []
 
         # ----- ドット位置と時間の初期化 -----
         red_current_pos, green_current_pos = init_positions(), init_positions()
@@ -404,6 +500,12 @@ try:
         if stereo_snd and stereo_snd.status != constants.STOPPED:
             stereo_snd.stop()
         stereo_snd = build_multi_stereo_sound(sync_red, PANNING_MODE)
+
+        # ----- 測定開始 -----
+        if udp_comm.running:
+            udp_comm.clear_data()
+            udp_comm.start_measurement()
+            time.sleep(0.05)  # 測定開始の確認を短縮
 
         # ----- 刺激提示 & 応答取得 -----
         participant_response = 'no_response'
@@ -431,21 +533,17 @@ try:
             # ドットの座標を更新
             if SCROLLING_MODE:
                 virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
-                # カメラのY座標を計算（時間と共に増加していく）
                 camera_y = ((now * FALL_SPEED) % virtual_h)
 
-                # 描画用の座標を計算
                 temp_red_xys = red_current_pos.copy()
                 temp_red_xys[:, 1] -= camera_y
 
                 temp_green_xys = green_current_pos.copy()
                 temp_green_xys[:, 1] -= camera_y
 
-                # 座標を仮想空間の範囲にラップ（トーラス状に折り返し）
                 temp_red_xys[:, 1] = ((temp_red_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
                 temp_green_xys[:, 1] = ((temp_green_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
 
-                # X座標の横揺れを適用
                 phase = 2 * np.pi * OSC_FREQ * now
                 x_osc_offset = OSC_AMP * np.sin(phase)
                 temp_red_xys[:, 0] = red_base_x + x_osc_offset
@@ -454,7 +552,6 @@ try:
                 red_dots.xys = temp_red_xys
                 green_dots.xys = temp_green_xys
             else:
-                # 通常モードではドットが落下し、画面下でループする
                 red_current_pos[:, 1] -= FALL_SPEED * dt
                 green_current_pos[:, 1] -= FALL_SPEED * dt
 
@@ -464,7 +561,6 @@ try:
                 is_below_screen_green = green_current_pos[:, 1] < Y_MIN
                 green_current_pos[is_below_screen_green, 1] += WIN_H
 
-                # X座標の横揺れを適用
                 phase = 2 * np.pi * OSC_FREQ * now
                 x_osc_offset = OSC_AMP * np.sin(phase)
                 red_current_pos[:, 0] = red_base_x + x_osc_offset
@@ -473,25 +569,13 @@ try:
                 red_dots.xys = red_current_pos
                 green_dots.xys = green_current_pos
 
-            # ------------------------------------------------------------------
-            # ★★★★★★★★★★★★★★★★★★★★★★★ 変更点 3 ★★★★★★★★★★★★★★★★★★★★★★★
-            # 加速度データとドットの平均座標をログに記録
-            # ------------------------------------------------------------------
-            if accel_log_fh:
-                current_time = trial_clock.getTime()
-                accel_data_points = serial_reader.get_all_data()
+            # ドット位置の履歴を保存
+            red_mean_xy = np.mean(red_dots.xys, axis=0)
+            green_mean_xy = np.mean(green_dots.xys, axis=0)
 
-                # このフレームでのドットの平均中心座標を計算
-                red_mean_xy = np.mean(red_dots.xys, axis=0)
-                green_mean_xy = np.mean(green_dots.xys, axis=0)
-
-                for data_point in accel_data_points:
-                    accel_log_csv.writerow([
-                        f"{current_time:.6f}", 
-                        data_point[0], data_point[1], data_point[2],
-                        red_mean_xy[0], red_mean_xy[1],
-                        green_mean_xy[0], green_mean_xy[1]
-                    ])
+            red_dot_positions.append(red_mean_xy.tolist())
+            green_dot_positions.append(green_mean_xy.tolist())
+            timestamps.append(now)
 
             red_dots.draw()
             green_dots.draw()
@@ -500,11 +584,31 @@ try:
         if stereo_snd and stereo_snd.status != constants.STOPPED:
             stereo_snd.stop()
 
-        # 試行ごとの加速度ログファイルを閉じる
-        if accel_log_fh:
-            accel_log_fh.close()
-            # 修正された関数を呼び出してグラフを生成
-            save_acceleration_graph(accel_log_path, trial_idx)
+        # ----- 測定停止とデータ取得 -----
+        if udp_comm.running:
+            udp_comm.stop_measurement()
+            time.sleep(0.05)  # 測定停止の確認を短縮
+
+            # データ要求とデータ受信
+            print("Requesting acceleration data from M5Stack...")
+            udp_comm.request_data()
+            
+            # データ受信完了を待機（最大10秒）
+            print("Waiting for data reception to complete...")
+            if udp_comm.wait_for_data_reception(timeout=10.0):
+                print("Data reception completed successfully")
+            else:
+                print("Warning: Data reception may be incomplete")
+
+            # 受信したデータを取得
+            accel_data = udp_comm.get_accel_data()
+            print(f"Retrieved {len(accel_data)} acceleration data points")
+
+            # グラフを生成
+            save_acceleration_graph_from_data(
+                accel_data, red_dot_positions, green_dot_positions, 
+                timestamps, trial_idx, LOG_DIR
+            )
 
         if not experiment_running:
             break
@@ -539,16 +643,14 @@ try:
 except Exception as e:
     print(f"エラーが発生しました: {e}")
 finally:
-    # スレッドとシリアルポートを安全に閉じる
-    if serial_reader:
-        serial_reader.stop()
+    # UDP通信を安全に閉じる
+    if udp_comm:
+        udp_comm.stop()
     if stereo_snd and stereo_snd.status != constants.STOPPED:
         stereo_snd.stop()
     if 'main_log_fh' in locals() and main_log_fh and not main_log_fh.closed:
         main_log_fh.close()
         print(f"メインログを保存しました: {os.path.abspath(MAIN_LOG_PATH)}")
-    if 'accel_log_fh' in locals() and accel_log_fh and not accel_log_fh.closed:
-        accel_log_fh.close() # 念のため閉じる
     if 'win' in locals() and win:
         win.close()
     core.quit()

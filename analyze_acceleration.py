@@ -303,7 +303,7 @@ def main():
     base_name_raw = os.path.splitext(os.path.basename(csv_file))[0]
     output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw.png")
     print("\nフィルタなしのグラフを表示します...")
-    plot_angle_analysis(df_raw_with_angles, gravity_vector_raw, output_raw)
+    plot_angle_analysis(df_raw_with_angles[df_raw_with_angles["psychopy_time"]>=START_TIME], gravity_vector_raw, output_raw)
 
     # --- フィルタありで解析 ---
     print("\n--- ローパスフィルタありで解析 ---")
@@ -314,7 +314,7 @@ def main():
     base_name_filtered = os.path.splitext(os.path.basename(csv_file))[0]
     output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered.png")
     print("\nフィルタありのグラフを表示します...")
-    plot_angle_analysis(df_filtered_with_angles, gravity_vector_filtered, output_filtered)
+    plot_angle_analysis(df_filtered_with_angles[df_raw_with_angles["psychopy_time"]>=START_TIME], gravity_vector_filtered, output_filtered)
 
 
 if __name__ == "__main__":

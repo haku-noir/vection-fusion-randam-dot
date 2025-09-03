@@ -10,13 +10,41 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import sys
+from scipy.signal import butter, lfilter
 
-def calculate_acceleration_magnitude(csv_file_path):
+START_TIME = 10
+
+def apply_lowpass_filter(df, cutoff=5, fs=120, order=4):
+    """
+    データフレームの加速度データにローパスフィルタを適用
+
+    Args:
+        df (pd.DataFrame): 加速度データを含むデータフレーム
+        cutoff (float): カットオフ周波数 (Hz)
+        fs (float): サンプリング周波数 (Hz)
+        order (int): フィルタの次数
+
+    Returns:
+        pd.DataFrame: フィルタ適用後のデータフレーム
+    """
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+
+    df_filtered = df.copy()
+    df_filtered['accel_x'] = lfilter(b, a, df['accel_x'])
+    df_filtered['accel_y'] = lfilter(b, a, df['accel_y'])
+    df_filtered['accel_z'] = lfilter(b, a, df['accel_z'])
+
+    return df_filtered
+
+def calculate_acceleration_magnitude(csv_file_path, use_filter=False):
     """
     CSVファイルから加速度データを読み込み、加速度ベクトルの大きさを計算
 
     Args:
         csv_file_path (str): CSVファイルのパス
+        use_filter (bool): ローパスフィルタを適用するかどうか
 
     Returns:
         pd.DataFrame: 時間と加速度ベクトルの大きさを含むデータフレーム
@@ -31,6 +59,11 @@ def calculate_acceleration_magnitude(csv_file_path):
         for col in required_columns:
             if col not in df.columns:
                 raise ValueError(f"必要な列 '{col}' が見つかりません")
+
+        # ローパスフィルタを適用（オプション）
+        if use_filter:
+            print("ローパスフィルタを適用します...")
+            df = apply_lowpass_filter(df)
 
         # 加速度ベクトルの大きさを計算 (√(x² + y² + z²))
         df['accel_magnitude'] = np.sqrt(
@@ -176,6 +209,7 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
                 label=f'平均の大きさ: {gravity_magnitude:.2f}')
     plt.xlabel('時間 (秒)')
     plt.ylabel('加速度の大きさ (m/s²)')
+    plt.ylim(9.5, 10.2)  # y軸の範囲を-5度から+5度に固定
     plt.title('加速度ベクトルの大きさと平均の大きさ')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -260,21 +294,28 @@ def main():
 
     print(f"解析対象ファイル: {csv_file}")
 
-    # データの読み込みと処理
-    df = calculate_acceleration_magnitude(csv_file)
-    if df is None:
+    # --- フィルタなしで解析 ---
+    print("\n--- フィルタなし (生データ) で解析 ---")
+    df_raw = calculate_acceleration_magnitude(csv_file, use_filter=False)
+    if df_raw is None:
         return
+    df_raw_with_angles, gravity_vector_raw = calculate_gravity_and_angles(df_raw)
+    base_name_raw = os.path.splitext(os.path.basename(csv_file))[0]
+    output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw.png")
+    print("\nフィルタなしのグラフを表示します...")
+    plot_angle_analysis(df_raw_with_angles, gravity_vector_raw, output_raw)
 
-    # 重力加速度と角度の計算
-    df_with_angles, gravity_vector = calculate_gravity_and_angles(df)
+    # --- フィルタありで解析 ---
+    print("\n--- ローパスフィルタありで解析 ---")
+    df_filtered = calculate_acceleration_magnitude(csv_file, use_filter=True)
+    if df_filtered is None:
+        return
+    df_filtered_with_angles, gravity_vector_filtered = calculate_gravity_and_angles(df_filtered)
+    base_name_filtered = os.path.splitext(os.path.basename(csv_file))[0]
+    output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered.png")
+    print("\nフィルタありのグラフを表示します...")
+    plot_angle_analysis(df_filtered_with_angles, gravity_vector_filtered, output_filtered)
 
-    # 出力ファイル名を生成
-    base_name = os.path.splitext(os.path.basename(csv_file))[0]
-    angle_output = os.path.join(os.path.dirname(csv_file), f"{base_name}_angle_analysis.png")
-
-    # グラフの作成と表示
-    print("\n角度解析のグラフを表示します...")
-    plot_angle_analysis(df_with_angles, gravity_vector, angle_output)
 
 if __name__ == "__main__":
     main()

@@ -16,7 +16,11 @@ struct AccelData {
 
 // データ保存用バッファ
 std::vector<AccelData> accel_buffer;
-const size_t MAX_BUFFER_SIZE = 100000;  // 最大保存数（100秒分の余裕）
+// バッファサイズ計算: 試行時間(60s) × サンプリングレート(120Hz) = 7,200サンプル
+// 余裕を持って10,000サンプルに設定（約83秒分）
+// AccelData構造体: unsigned long(4) + float×3(12) = 16bytes/sample
+// 10,000 samples × 16 bytes = 160KB (ESP32の4MBメモリ内で十分)
+const size_t MAX_BUFFER_SIZE = 10000;  // 最大保存数（120Hz×83秒分の余裕）
 
 // 測定状態
 bool measuring = false;
@@ -25,6 +29,10 @@ unsigned long measurement_start_time = 0;
 // 単位変換のための定数（1G = 9.80665 m/s^2）
 const float G_TO_MS2 = 9.80665;
 
+// キャリブレーション用のパラメータ
+float offset_x = 0.0, offset_y = 0.0, offset_z = 0.0;
+bool calibrated = false;
+
 // 関数の前方宣言
 void checkUDPCommands();
 void collectAccelData();
@@ -32,6 +40,7 @@ void updateDisplay();
 void startMeasurement();
 void stopMeasurement();
 void sendDataToPC();
+void calibrateAccelerometer();
 
 void setup() {
   // M5Stackの初期化（警告対応：パラメータを明示的に指定）
@@ -71,6 +80,11 @@ void setup() {
 
   // バッファを予約
   accel_buffer.reserve(MAX_BUFFER_SIZE);
+
+  // 加速度センサーのキャリブレーション実行
+  M5.Lcd.println("Calibrating...");
+  calibrateAccelerometer();
+  M5.Lcd.println("Calibration complete");
 
   M5.Lcd.println("Ready for commands");
   Serial.println("M5Stack ready for wireless communication");
@@ -127,7 +141,7 @@ void startMeasurement() {
   udp.endPacket();
 
   Serial.printf("Measurement started. Buffer capacity: %d samples\n", MAX_BUFFER_SIZE);
-  Serial.printf("Expected capacity for 60s at 1000Hz: 60,000 samples\n");
+  Serial.printf("Expected capacity for 60s at 120Hz: 7,200 samples\n");
 }
 
 void stopMeasurement() {
@@ -166,11 +180,17 @@ void collectAccelData() {
   float accX_g, accY_g, accZ_g;
   M5.IMU.getAccelData(&accX_g, &accY_g, &accZ_g);
 
+  // m/s^2に変換
+  float raw_x = accX_g * G_TO_MS2;
+  float raw_y = accY_g * G_TO_MS2;
+  float raw_z = accZ_g * G_TO_MS2;
+
+  // キャリブレーションオフセットを適用
   AccelData data;
   data.timestamp = now - measurement_start_time;  // 測定開始からの相対時間
-  data.x = accX_g * G_TO_MS2;
-  data.y = accY_g * G_TO_MS2;
-  data.z = accZ_g * G_TO_MS2;
+  data.x = raw_x - offset_x;
+  data.y = raw_y - offset_y;
+  data.z = raw_z - offset_z;
 
   accel_buffer.push_back(data);
 }
@@ -185,13 +205,15 @@ void sendDataToPC() {
   delay(2);  // 遅延を短縮
 
   // データを分割して送信（チャンクサイズを増加）
-  const size_t CHUNK_SIZE = 20;  // 一度に送信するデータ数を増加
+  const size_t CHUNK_SIZE = 15;  // チャンクサイズを少し小さくして安定性向上
+  size_t total_chunks = (accel_buffer.size() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
   for (size_t i = 0; i < accel_buffer.size(); i += CHUNK_SIZE) {
     String dataChunk = "";
 
     for (size_t j = i; j < i + CHUNK_SIZE && j < accel_buffer.size(); j++) {
       if (j > i) dataChunk += "|";
-      dataChunk += String(accel_buffer[j].timestamp) + "," + 
+      dataChunk += String(accel_buffer[j].timestamp) + "," +
                    String(accel_buffer[j].x, 6) + "," +
                    String(accel_buffer[j].y, 6) + "," +
                    String(accel_buffer[j].z, 6);
@@ -200,10 +222,18 @@ void sendDataToPC() {
     udp.beginPacket(pc_ip, PC_PORT);
     udp.print(dataChunk);
     udp.endPacket();
-    delay(1);  // パケット間の遅延を短縮
+
+    // 進捗表示
+    size_t chunk_num = i / CHUNK_SIZE + 1;
+    if (chunk_num % 50 == 0) {  // 50チャンクごとに進捗表示
+      Serial.printf("Sent chunk %d/%d\n", chunk_num, total_chunks);
+    }
+
+    delay(2);  // パケット間の遅延を少し増加して安定性向上
   }
 
   // 送信完了を通知
+  delay(10);  // 最後のデータチャンクの送信確保
   udp.beginPacket(pc_ip, PC_PORT);
   udp.print("DATA_END");
   udp.endPacket();
@@ -240,4 +270,54 @@ void updateDisplay() {
     M5.Lcd.printf("Buffer: %d/%d\n", accel_buffer.size(), MAX_BUFFER_SIZE);
     M5.Lcd.println("Ready for commands");
   }
+}
+
+// キャリブレーション関数（静止状態での平均値を基準として設定）
+void calibrateAccelerometer() {
+  const int CALIBRATION_SAMPLES = 500;  // キャリブレーション用サンプル数
+  float sum_x = 0, sum_y = 0, sum_z = 0;
+
+  Serial.println("Starting accelerometer calibration...");
+  Serial.println("Please keep the device still for 5 seconds");
+
+  for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
+    float accX_g, accY_g, accZ_g;
+    M5.IMU.getAccelData(&accX_g, &accY_g, &accZ_g);
+
+    float raw_x = accX_g * G_TO_MS2;
+    float raw_y = accY_g * G_TO_MS2;
+    float raw_z = accZ_g * G_TO_MS2;
+
+    sum_x += raw_x;
+    sum_y += raw_y;
+    sum_z += raw_z;
+
+    delay(10);  // 10ms間隔でサンプリング
+
+    // 進捗表示
+    if (i % 100 == 0) {
+      Serial.printf("Calibration progress: %d/%d\n", i, CALIBRATION_SAMPLES);
+    }
+  }
+
+  // 平均値を計算（これが静止状態での基準値）
+  float avg_x = sum_x / CALIBRATION_SAMPLES;
+  float avg_y = sum_y / CALIBRATION_SAMPLES;
+  float avg_z = sum_z / CALIBRATION_SAMPLES;
+
+  // 理想的な重力ベクトル（M5Stackが水平に置かれている場合）
+  // 実際の設置姿勢に応じて、重力の方向を推定
+  float gravity_magnitude = sqrt(avg_x*avg_x + avg_y*avg_y + avg_z*avg_z);
+
+  // オフセットの計算（重力以外の成分を除去）
+  offset_x = avg_x - (avg_x / gravity_magnitude) * 9.80665;
+  offset_y = avg_y - (avg_y / gravity_magnitude) * 9.80665;
+  offset_z = avg_z - (avg_z / gravity_magnitude) * 9.80665;
+
+  Serial.printf("Calibration complete!\n");
+  Serial.printf("Average values: X=%.3f, Y=%.3f, Z=%.3f\n", avg_x, avg_y, avg_z);
+  Serial.printf("Gravity magnitude: %.3f m/s²\n", gravity_magnitude);
+  Serial.printf("Offsets: X=%.3f, Y=%.3f, Z=%.3f\n", offset_x, offset_y, offset_z);
+
+  calibrated = true;
 }

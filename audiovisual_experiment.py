@@ -283,32 +283,49 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
 
 # 加速度グラフを保存
 def save_acceleration_graph(log_path, trial_idx):
-    """加速度ログを読み込み、グラフとして保存する"""
+    """加速度ログとドット座標を読み込み、グラフとして保存する"""
     try:
-        # CSVファイルを読み込む
         df = pd.read_csv(log_path)
         if df.empty:
-            print(f"Trial {trial_idx}: Accelerometer log is empty. Skipping graph.")
+            print(f"Trial {trial_idx}: Log file is empty. Skipping graph.")
             return
 
-        # グラフを作成
-        fig, ax = plt.subplots(figsize=(15, 7))
-        ax.plot(df['psychopy_time'], df['accel_x'], label='X-axis', alpha=0.8)
-        ax.plot(df['psychopy_time'], df['accel_y'], label='Y-axis', alpha=0.8)
-        ax.plot(df['psychopy_time'], df['accel_z'], label='Z-axis', alpha=0.8)
+        # グラフと左側のY軸（加速度）を作成
+        fig, ax1 = plt.subplots(figsize=(15, 8))
 
-        # ラベルとタイトルを設定
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Acceleration (m/s^2)")
-        ax.set_title(f"Trial {trial_idx}: Accelerometer Data")
-        ax.legend()
-        ax.grid(True)
+        # 加速度データをプロット
+        ax1.plot(df['psychopy_time'], df['accel_x'], label='Accel X', color='royalblue', alpha=0.8)
+        ax1.plot(df['psychopy_time'], df['accel_y'], label='Accel Y', color='seagreen', alpha=0.8)
+        ax1.plot(df['psychopy_time'], df['accel_z'], label='Accel Z', color='darkred', alpha=0.8)
+        ax1.set_xlabel("Time (s)")
+        ax1.set_ylabel("Acceleration (m/s^2)", color='black')
+        ax1.tick_params(axis='y', labelcolor='black')
+        ax1.grid(True)
+
+        # 右側のY軸（ドットのX座標）を作成
+        ax2 = ax1.twinx()
+
+        # ドットの平均X座標をプロット
+        ax2.plot(df['psychopy_time'], df['red_dot_mean_x'], label='Red Dot Mean X', color='orange', linestyle='--')
+        ax2.plot(df['psychopy_time'], df['green_dot_mean_x'], label='Green Dot Mean X', color='green', linestyle='--')
+        ax2.set_ylabel("Dot Mean X Position (pixels)", color='black')
+        ax2.tick_params(axis='y', labelcolor='black')
+
+        # グラフ全体のタイトルを設定
+        plt.title(f"Trial {trial_idx}: Accelerometer Data and Dot Position")
+
+        # 左右のY軸の凡例を結合して表示
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc='best')
+
+        fig.tight_layout() # レイアウトを調整
 
         # グラフをファイルとして保存
         graph_path = log_path.replace('.csv', '.png')
         plt.savefig(graph_path)
         plt.close(fig) # メモリを解放
-        print(f"Saved accelerometer graph to {graph_path}")
+        print(f"Saved data graph to {graph_path}")
 
     except FileNotFoundError:
         print(f"Error: Could not find log file {log_path} to create graph.")
@@ -370,7 +387,9 @@ try:
                 accel_log_path = os.path.join(LOG_DIR, accel_log_filename)
                 accel_log_fh = open(accel_log_path, 'w', newline='', encoding='utf-8')
                 accel_log_csv = csv.writer(accel_log_fh)
-                accel_log_csv.writerow(['psychopy_time', 'accel_x', 'accel_y', 'accel_z'])
+                accel_log_csv.writerow(['psychopy_time', 'accel_x', 'accel_y', 'accel_z',
+                                        'red_dot_mean_x', 'red_dot_mean_y', 
+                                        'green_dot_mean_x', 'green_dot_mean_y'])
             except IOError as e:
                 print(f"加速度ログファイルを作成できませんでした: {e}")
                 accel_log_fh = None
@@ -405,17 +424,11 @@ try:
                     participant_response = response_mapping.get(key_name, 'invalid')
                 break
 
-            # 毎フレーム、加速度データを取得してログに記録
-            if accel_log_fh:
-                current_time = trial_clock.getTime()
-                accel_data_points = serial_reader.get_all_data()
-                for data_point in accel_data_points:
-                    accel_log_csv.writerow([f"{current_time:.6f}", data_point[0], data_point[1], data_point[2]])
-
             now = trial_clock.getTime()
             dt  = now - last_t
             last_t = now
 
+            # ドットの座標を更新
             if SCROLLING_MODE:
                 virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
                 # カメラのY座標を計算（時間と共に増加していく）
@@ -460,6 +473,26 @@ try:
                 red_dots.xys = red_current_pos
                 green_dots.xys = green_current_pos
 
+            # ------------------------------------------------------------------
+            # ★★★★★★★★★★★★★★★★★★★★★★★ 変更点 3 ★★★★★★★★★★★★★★★★★★★★★★★
+            # 加速度データとドットの平均座標をログに記録
+            # ------------------------------------------------------------------
+            if accel_log_fh:
+                current_time = trial_clock.getTime()
+                accel_data_points = serial_reader.get_all_data()
+
+                # このフレームでのドットの平均中心座標を計算
+                red_mean_xy = np.mean(red_dots.xys, axis=0)
+                green_mean_xy = np.mean(green_dots.xys, axis=0)
+
+                for data_point in accel_data_points:
+                    accel_log_csv.writerow([
+                        f"{current_time:.6f}", 
+                        data_point[0], data_point[1], data_point[2],
+                        red_mean_xy[0], red_mean_xy[1],
+                        green_mean_xy[0], green_mean_xy[1]
+                    ])
+
             red_dots.draw()
             green_dots.draw()
             win.flip()
@@ -470,6 +503,7 @@ try:
         # 試行ごとの加速度ログファイルを閉じる
         if accel_log_fh:
             accel_log_fh.close()
+            # 修正された関数を呼び出してグラフを生成
             save_acceleration_graph(accel_log_path, trial_idx)
 
         if not experiment_running:

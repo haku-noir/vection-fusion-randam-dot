@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env# --- 設定 ---
 # -*- coding: utf-8 -*-
 """
 加速度データの解析プログラム
@@ -12,7 +12,13 @@ import os
 import sys
 from scipy.signal import butter, lfilter
 
-START_TIME = 10
+# --- 設定 ---
+# グラフを60秒ごとに分割して出力するかどうか
+SPLIT_PLOTS_BY_TIME = True
+SPLIT_DURATION = 180  # 分割する時間（秒）
+START_TIME = 10 # 解析開始時間(s)
+FILTER_CUTOFF_HZ = 1 # ローパスフィルタのカットオフ周波数 (Hz)
+
 
 def apply_lowpass_filter(df, cutoff=5, fs=120, order=4):
     """
@@ -62,8 +68,8 @@ def calculate_acceleration_magnitude(csv_file_path, use_filter=False):
 
         # ローパスフィルタを適用（オプション）
         if use_filter:
-            print("ローパスフィルタを適用します...")
-            df = apply_lowpass_filter(df)
+            print(f"ローパスフィルタ（{FILTER_CUTOFF_HZ}Hz）を適用します...")
+            df = apply_lowpass_filter(df, cutoff=FILTER_CUTOFF_HZ)
 
         # 加速度ベクトルの大きさを計算 (√(x² + y² + z²))
         df['accel_magnitude'] = np.sqrt(
@@ -172,7 +178,7 @@ def calculate_gravity_and_angles(df):
     return df_with_angles, gravity_vector
 
 
-def plot_angle_analysis(df, gravity_vector, output_file=None):
+def plot_angle_analysis(df, gravity_vector, output_file=None, split_plots=False, segment_duration=60):
     """
     角度解析のグラフをプロット
 
@@ -180,7 +186,48 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
         df (pd.DataFrame): 角度データを含むデータフレーム
         gravity_vector (np.array): 重力ベクトル
         output_file (str): 保存するファイル名（Noneの場合は表示のみ）
+        split_plots (bool): Trueの場合、segment_durationごとにグラフを分割して保存
+        segment_duration (int): 分割する場合の時間（秒）
     """
+    if not split_plots:
+        # 従来通り、全範囲を1枚のプロットで表示・保存
+        _plot_single_chart(df, gravity_vector, output_file, show_plot=True)
+    else:
+        # グラフを分割して保存
+        if df.empty:
+            print("データが空のため、分割プロットは作成されません。")
+            return
+
+        t_min = df['psychopy_time'].min()
+        t_max = df['psychopy_time'].max()
+        print(f"データを{segment_duration}秒ごとに分割してプロットを作成します... (範囲: {t_min:.2f}s - {t_max:.2f}s)")
+
+        base_name, ext = os.path.splitext(output_file)
+
+        for t_start in np.arange(t_min, t_max, segment_duration):
+            t_end = t_start + segment_duration
+            df_segment = df[(df['psychopy_time'] >= t_start) & (df['psychopy_time'] < t_end)]
+
+            if df_segment.empty:
+                continue
+
+            # セグメントごとの出力ファイル名を作成
+            segment_output_file = f"{base_name}_{int(t_start)}-{int(t_end)}s{ext}"
+
+            print(f"  - {int(t_start)}s から {int(t_end)}s の区間をプロット中...")
+            # 各セグメントのグラフを作成・保存（表示はしない）
+            _plot_single_chart(df_segment, gravity_vector, segment_output_file, show_plot=False)
+        print("分割プロットの作成が完了しました。")
+
+
+def _plot_single_chart(df, gravity_vector, output_file, show_plot=True):
+    """
+    単一のグラフを作成・保存・表示する内部関数
+    """
+    if df.empty:
+        print("プロットするデータがありません。")
+        return
+
     plt.figure(figsize=(15, 12))
 
     # 日本語フォントの設定（macOS用）
@@ -196,7 +243,7 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
     plt.axhline(y=gravity_vector[2], color='blue', linestyle='--', alpha=0.8, label=f'平均Z: {gravity_vector[2]:.2f}')
     plt.xlabel('時間 (秒)')
     plt.ylabel('加速度 (m/s²)')
-    plt.title('各軸の加速度変化と推定平均加速度')
+    plt.title(f'各軸の加速度変化と推定平均加速度 ({df["psychopy_time"].min():.1f}s - {df["psychopy_time"].max():.1f}s)')
     plt.legend()
     plt.grid(True, alpha=0.3)
 
@@ -209,7 +256,7 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
                 label=f'平均の大きさ: {gravity_magnitude:.2f}')
     plt.xlabel('時間 (秒)')
     plt.ylabel('加速度の大きさ (m/s²)')
-    plt.ylim(9.5, 10.2)  # y軸の範囲を-5度から+5度に固定
+    plt.ylim(9.5, 10.2)
     plt.title('加速度ベクトルの大きさと平均の大きさ')
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -224,7 +271,7 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
     ax1.axhline(y=0, color='black', linestyle='-', alpha=0.5)
     ax1.set_xlabel('時間 (秒)')
     ax1.set_ylabel('角度変化 (度)', color='orange')
-    ax1.set_ylim(-5, 5)  # y軸の範囲を-5度から+5度に固定
+    ax1.set_ylim(-10,  10)  # y軸の範囲を-5度から+5度に固定
     ax1.tick_params(axis='y', labelcolor='orange')
     ax1.grid(True, alpha=0.3)
 
@@ -252,7 +299,7 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
     plt.tight_layout()
 
     # 統計情報を表示
-    print(f"\n=== 加速度ベクトルの統計情報 ===")
+    print(f"\n=== 加速度ベクトルの統計情報 ({df['psychopy_time'].min():.1f}s - {df['psychopy_time'].max():.1f}s) ===")
     print(f"平均値: {df['accel_magnitude'].mean():.3f} m/s²")
     print(f"標準偏差: {df['accel_magnitude'].std():.3f} m/s²")
     print(f"最大値: {df['accel_magnitude'].max():.3f} m/s²")
@@ -260,7 +307,7 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
     print(f"測定時間: {df['psychopy_time'].iloc[-1] - df['psychopy_time'].iloc[0]:.3f} 秒")
 
     # 角度の統計情報を表示
-    print(f"\n=== 角度の統計情報 ===")
+    print(f"\n=== 角度の統計情報 ({df['psychopy_time'].min():.1f}s - {df['psychopy_time'].max():.1f}s) ===")
     print(f"平均との角度の平均値: {df['angle_to_gravity'].mean():.3f} 度")
     print(f"平均との角度の標準偏差: {df['angle_to_gravity'].std():.3f} 度")
     print(f"平均との角度の最大値: {df['angle_to_gravity'].max():.3f} 度")
@@ -274,7 +321,10 @@ def plot_angle_analysis(df, gravity_vector, output_file=None):
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         print(f"角度解析グラフを保存しました: {output_file}")
 
-    plt.show()
+    if show_plot:
+        plt.show()
+
+    plt.close() # メモリを解放
 
 def main():
     """メイン処理"""
@@ -303,7 +353,13 @@ def main():
     base_name_raw = os.path.splitext(os.path.basename(csv_file))[0]
     output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw.png")
     print("\nフィルタなしのグラフを表示します...")
-    plot_angle_analysis(df_raw_with_angles[df_raw_with_angles["psychopy_time"]>=START_TIME], gravity_vector_raw, output_raw)
+    plot_angle_analysis(
+        df_raw_with_angles[df_raw_with_angles["psychopy_time"]>=START_TIME],
+        gravity_vector_raw,
+        output_raw,
+        split_plots=SPLIT_PLOTS_BY_TIME,
+        segment_duration=SPLIT_DURATION
+    )
 
     # --- フィルタありで解析 ---
     print("\n--- ローパスフィルタありで解析 ---")
@@ -312,9 +368,15 @@ def main():
         return
     df_filtered_with_angles, gravity_vector_filtered = calculate_gravity_and_angles(df_filtered)
     base_name_filtered = os.path.splitext(os.path.basename(csv_file))[0]
-    output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered.png")
+    output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered_{FILTER_CUTOFF_HZ}Hz.png")
     print("\nフィルタありのグラフを表示します...")
-    plot_angle_analysis(df_filtered_with_angles[df_raw_with_angles["psychopy_time"]>=START_TIME], gravity_vector_filtered, output_filtered)
+    plot_angle_analysis(
+        df_filtered_with_angles[df_filtered_with_angles["psychopy_time"]>=START_TIME],
+        gravity_vector_filtered,
+        output_filtered,
+        split_plots=SPLIT_PLOTS_BY_TIME,
+        segment_duration=SPLIT_DURATION
+    )
 
 
 if __name__ == "__main__":

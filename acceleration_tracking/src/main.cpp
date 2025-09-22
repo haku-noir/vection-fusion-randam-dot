@@ -20,7 +20,7 @@ std::vector<AccelData> accel_buffer;
 // 余裕を持って10,000サンプルに設定（約83秒分）
 // AccelData構造体: unsigned long(4) + float×3(12) = 16bytes/sample
 // 10,000 samples × 16 bytes = 160KB (ESP32の4MBメモリ内で十分)
-const size_t MAX_BUFFER_SIZE = 10000;  // 最大保存数（120Hz×83秒分の余裕）
+const size_t MAX_BUFFER_SIZE = 30000;  // 最大保存数（120Hz×83秒分の余裕）
 
 // 測定状態
 bool measuring = false;
@@ -30,6 +30,7 @@ unsigned long measurement_start_time = 0;
 const float G_TO_MS2 = 9.80665;
 
 // キャリブレーション用のパラメータ
+bool DO_CALIBRATION = false;
 float offset_x = 0.0, offset_y = 0.0, offset_z = 0.0;
 bool calibrated = false;
 
@@ -82,9 +83,11 @@ void setup() {
   accel_buffer.reserve(MAX_BUFFER_SIZE);
 
   // 加速度センサーのキャリブレーション実行
-  M5.Lcd.println("Calibrating...");
-  calibrateAccelerometer();
-  M5.Lcd.println("Calibration complete");
+  if (DO_CALIBRATION) {
+    M5.Lcd.println("Calibrating...");
+    calibrateAccelerometer();
+    M5.Lcd.println("Calibration complete");
+  }
 
   M5.Lcd.println("Ready for commands");
   Serial.println("M5Stack ready for wireless communication");

@@ -43,19 +43,18 @@ import matplotlib.pyplot as plt
 # 2. 実験パラメータ（自由に変更可）
 # ------------------------------------------------------------------
 # M5StackとのWiFi通信設定 - 実際の環境に合わせて変更してください
-M5_IP = '192.168.1.146'  # M5StackのIPアドレス（M5Stackの画面で確認して設定）
+M5_IP = '192.168.1.235'  # M5StackのIPアドレス（M5Stackの画面で確認して設定）
 M5_PORT = 12346          # M5Stackが待機するポート
 PC_PORT = 12345          # PCが待機するポート
 
 # 音源の情報を保持するクラス
 class SoundSource:
-    """音源の周波数スペクトルと基本位置を保持するクラス"""
-    def __init__(self, freqs, base_pos):
+    """音源の周波数を保持するシンプルなクラス"""
+    def __init__(self, freqs):
         if not isinstance(freqs, list):
             self.freqs = [freqs]
         else:
             self.freqs = freqs
-        self.base_pos = base_pos
 
 # ★★★ 音響モードを選択 ★★★
 # 'volume': 音量差パンニング
@@ -76,27 +75,32 @@ OSC_FREQ      = 0.1         # 横揺れ周波数 [Hz]
 OSC_AMP       = 500           # ドットの横揺れ振幅 [pix]
 
 # 音
-# 仮想的な「世界空間」を最小値と最大値で定義
-WORLD_SPACE_MIN = -100.0 # 世界空間の左端
-WORLD_SPACE_MAX = 100.0  # 世界空間の右端
-OSC_AMP_WORLD = 80.0     # 世界空間における音の振動の振幅
+# 2D座標系での音響パラメータ
+SOUND_INITIAL_X = 0.0       # 音像の初期X座標
+SOUND_INITIAL_Y = 1.0       # 音像の初期Y座標
+SOUND_OSC_AMPLITUDE = 0.5   # 音像の振動振幅（X軸方向）
 
-# 距離減衰に関するパラメータを追加
-LISTENER_POS_Z = 50.0      # リスナーのZ座標（音源平面からの距離）
-DISTANCE_ATTENUATION = 5000.0 # 距離減衰の係数（大きいほど減衰が緩やか）
-MIN_DISTANCE_GAIN = 0.05   # 距離が離れた際の最小ゲイン（音量が0にならないように）
+# 被験者と耳の位置
+LISTENER_X = 0.0            # 被験者の中心X座標
+LISTENER_Y = 0.0            # 被験者の中心Y座標
+LEFT_EAR_X = -0.1           # 左耳のX座標
+LEFT_EAR_Y = 0.0            # 左耳のY座標
+RIGHT_EAR_X = 0.1           # 右耳のX座標
+RIGHT_EAR_Y = 0.0           # 右耳のY座標
 
-# SoundSourceオブジェクトを周波数のリスト(freqs)で定義
+# 距離減衰パラメータ
+DISTANCE_ATTENUATION = 5.0  # 距離減衰の係数（音量を適切に保つ）
+MIN_DISTANCE_GAIN = 0.3     # 最小ゲイン（より高く設定）
+
+# SoundSourceオブジェクトをシンプルに定義
 SOUND_SOURCES = [
-    # SoundSource(freqs=[440.00, 880.00], base_pos=-25.0), # ラ(A4) とそのオクターブ上
-    SoundSource(freqs=[523.25], base_pos=0.0),          # ド(C5) のみ
-    # SoundSource(freqs=[659.25, 1318.50], base_pos=25.0)   # ミ(E5) とそのオクターブ上
+    SoundSource(freqs=[523.25]),  # ド(C5) 
 ]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
 
 # 試行
-TRIAL_DURATION   = 60.0      # 各試行の刺激掲示時間 [s]
+TRIAL_DURATION   = 180.0      # 各試行の刺激掲示時間 [s]
 ITI              = 1.0       # 刺激間インターバル [s]
 
 # ログ
@@ -267,90 +271,57 @@ def init_positions():
 
 
 # ------------------------------------------------------------------
-# 4. サウンド波形生成（モード切替対応）
+# 4. 2D座標系音響生成（各耳への個別距離減衰）
 # ------------------------------------------------------------------
 def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     """
-    複数の音源を世界空間に配置し、相対距離を保ったままグループとして
-    振動させ、ステレオ音響を生成する。
+    2D座標系で音像と各耳の距離を計算し、個別の距離減衰を適用した
+    ステレオ音響を生成する。
     """
     t = np.linspace(0, TRIAL_DURATION, int(SAMPLE_RATE * TRIAL_DURATION), endpoint=False)
 
-    base_positions = [s.base_pos for s in SOUND_SOURCES]
-    min_base_pos = min(base_positions) if base_positions else 0
-    max_base_pos = max(base_positions) if base_positions else 0
+    # ランダムドットと同期する振動波形
+    osc_wave = np.cos(2 * np.pi * OSC_FREQ * t)
+    if sync_to_red:
+        osc_wave *= -1  # 赤ドット同期時は位相反転
 
-    osc_wave = np.sin(2 * np.pi * OSC_FREQ * t)
+    # 音像のX座標の時間変化: (-0.5, 1) から (0.5, 1) を振動
+    sound_x = SOUND_INITIAL_X + SOUND_OSC_AMPLITUDE * osc_wave
+    sound_y = np.full_like(t, SOUND_INITIAL_Y)  # Y座標は固定
 
-    group_shift_world = OSC_AMP_WORLD * osc_wave
-    if not sync_to_red:
-        group_shift_world *= -1
+    # 各時間点での左耳と右耳から音像までの距離計算
+    distance_left = np.sqrt((sound_x - LEFT_EAR_X)**2 + (sound_y - LEFT_EAR_Y)**2)
+    distance_right = np.sqrt((sound_x - RIGHT_EAR_X)**2 + (sound_y - RIGHT_EAR_Y)**2)
 
-    predicted_left_edge = min_base_pos + group_shift_world
-    predicted_right_edge = max_base_pos + group_shift_world
+    # ゲイン計算
+    gain_left = 1.0 / (distance_left**2 + 1e-6)
+    gain_right = 1.0 / (distance_right**2 + 1e-6)
 
-    left_overhang = WORLD_SPACE_MIN - predicted_left_edge
-    left_overhang[left_overhang < 0] = 0
-    right_overhang = WORLD_SPACE_MAX - predicted_right_edge
-    right_overhang[right_overhang > 0] = 0
-
-    final_group_shift = group_shift_world + left_overhang + right_overhang
-
-    # --- 波形の合成 ---
+    # 各音源の波形を生成
     total_left_wave = np.zeros_like(t)
     total_right_wave = np.zeros_like(t)
 
     for source in SOUND_SOURCES:
-        source_pos_world = source.base_pos + final_group_shift
-
-        world_range = WORLD_SPACE_MAX - WORLD_SPACE_MIN
-        if world_range == 0: world_range = 1
-        final_pan = -1.0 + 2.0 * (source_pos_world - WORLD_SPACE_MIN) / world_range
-
-        left_gain, right_gain = 1.0, 1.0
-        delay_L_s, delay_R_s = 0.0, 0.0
-
-        if mode in ['volume', 'both']:
-            left_gain = np.sqrt(0.5 * (1 - final_pan))
-            right_gain = np.sqrt(0.5 * (1 + final_pan))
-
-        if mode in ['itd', 'both']:
-            delay_L_s = np.maximum(0, final_pan) * MAX_ITD_S
-            delay_R_s = np.maximum(0, -final_pan) * MAX_ITD_S
-
-        t_left = t - delay_L_s
-        t_right = t - delay_R_s
-
-        source_wave_left = np.zeros_like(t)
-        source_wave_right = np.zeros_like(t)
+        # 基本波形を生成
+        source_wave = np.zeros_like(t)
         for freq in source.freqs:
-            source_wave_left += np.sin(2 * np.pi * freq * t_left)
-            source_wave_right += np.sin(2 * np.pi * freq * t_right)
+            source_wave += np.sin(2 * np.pi * freq * t)
 
-        source_wave_left *= left_gain
-        source_wave_right *= right_gain
-
-        distance = np.sqrt(source_pos_world**2 + LISTENER_POS_Z**2)
-        distance_gain = DISTANCE_ATTENUATION / (distance**2 + 1e-6)
-        final_distance_gain = MIN_DISTANCE_GAIN + distance_gain
-        final_distance_gain = np.clip(final_distance_gain, 0.0, 1.0)
-
-        source_wave_left *= final_distance_gain
-        source_wave_right *= final_distance_gain
-
+        # 周波数正規化
         if source.freqs:
-            source_wave_left /= len(source.freqs)
-            source_wave_right /= len(source.freqs)
+            source_wave /= len(source.freqs)
 
-        total_left_wave += source_wave_left
-        total_right_wave += source_wave_right
+        # 左右チャンネルに個別の距離減衰を適用
+        total_left_wave += source_wave * gain_left
+        total_right_wave += source_wave * gain_right
 
+    # 音源数で正規化
     if SOUND_SOURCES:
         total_left_wave /= len(SOUND_SOURCES)
         total_right_wave /= len(SOUND_SOURCES)
 
+    # ステレオ信号の作成と最終音量調整
     stereo = np.column_stack([total_left_wave, total_right_wave])
-    stereo *= 0.9
 
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
 
@@ -449,9 +420,8 @@ try:
     header = [
         'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
         'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
-        'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'audio_positions_world', 
-        'world_space_min', 'world_space_max', 'sound_osc_amp_world', 
-        'listener_pos_z', 'distance_attenuation', 'min_distance_gain',
+        'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
+        'left_ear_pos', 'right_ear_pos', 'distance_attenuation', 'min_distance_gain',
         'sample_rate', 'max_itd_s'
     ]
     main_log_csv.writerow(header)
@@ -592,7 +562,7 @@ try:
             # データ要求とデータ受信
             print("Requesting acceleration data from M5Stack...")
             udp_comm.request_data()
-            
+
             # データ受信完了を待機（最大10秒）
             print("Waiting for data reception to complete...")
             if udp_comm.wait_for_data_reception(timeout=10.0):
@@ -615,13 +585,12 @@ try:
 
         # メインログに記録
         audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
-        audio_pos_str = " | ".join([str(s.base_pos) for s in SOUND_SOURCES])
         log_data = [
             trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
             WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
-            OSC_AMP, audio_freqs_str, audio_pos_str, WORLD_SPACE_MIN, WORLD_SPACE_MAX,
-            OSC_AMP_WORLD, LISTENER_POS_Z, DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN,
-            SAMPLE_RATE, MAX_ITD_S
+            OSC_AMP, audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,
+            f"({LEFT_EAR_X},{LEFT_EAR_Y})", f"({RIGHT_EAR_X},{RIGHT_EAR_Y})",
+            DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN, SAMPLE_RATE, MAX_ITD_S
         ]
         main_log_csv.writerow(log_data)
         main_log_fh.flush()

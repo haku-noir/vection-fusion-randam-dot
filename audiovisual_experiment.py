@@ -62,6 +62,11 @@ SERIAL_BAUDRATE = 115200 # M5Stackのボーレート
 #   M5Stack側でも COMMUNICATION_MODE = SERIAL_MODE に設定
 COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
+# GVS（前庭電気刺激）設定
+USE_GVS = True               # GVS刺激を使用するかどうか
+GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポート（適切なポートに変更）
+GVS_BAUDRATE = 115200        # GVSのボーレート
+
 # 音源の情報を保持するクラス
 class SoundSource:
     """音源の周波数を保持するシンプルなクラス"""
@@ -448,6 +453,70 @@ class UDPCommunicator(threading.Thread):
         self.running = False
 
 
+# GVS制御クラス
+class GVSController:
+    def __init__(self, port, baudrate=115200):
+        self.port = port
+        self.baudrate = baudrate
+        self.serial_connection = None
+        self.connected = False
+        
+    def connect(self):
+        """GVS用ESP32に接続"""
+        try:
+            import serial
+            self.serial_connection = serial.Serial(self.port, self.baudrate, timeout=1)
+            time.sleep(2)  # 接続待機
+            self.connected = True
+            print(f"GVS Controller connected to {self.port}")
+            return True
+        except Exception as e:
+            print(f"GVS Controller connection failed: {e}")
+            self.connected = False
+            return False
+    
+    def disconnect(self):
+        """GVS用ESP32から切断"""
+        if self.serial_connection:
+            try:
+                self.serial_connection.close()
+                self.connected = False
+                print("GVS Controller disconnected")
+            except Exception as e:
+                print(f"GVS Controller disconnect error: {e}")
+    
+    def send_command(self, command):
+        """GVS用ESP32にコマンドを送信"""
+        if not self.connected or not self.serial_connection:
+            print("GVS Controller not connected")
+            return False
+        
+        try:
+            command_with_newline = command + '\n'
+            self.serial_connection.write(command_with_newline.encode('utf-8'))
+            print(f"GVS command sent: {command}")
+            return True
+        except Exception as e:
+            print(f"GVS command send error: {e}")
+            return False
+    
+    def start_stimulation(self):
+        """GVS刺激開始"""
+        return self.send_command("START_GVS")
+    
+    def stop_stimulation(self):
+        """GVS刺激停止"""
+        return self.send_command("STOP_GVS")
+    
+    def set_amplitude(self, amplitude):
+        """GVS振幅設定（0-255）"""
+        if 0 <= amplitude <= 255:
+            return self.send_command(f"V{amplitude}")
+        else:
+            print(f"Invalid GVS amplitude: {amplitude} (must be 0-255)")
+            return False
+
+
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
@@ -792,6 +861,21 @@ else:
     print("COMMUNICATION_MODEを 'WIFI' または 'SERIAL' に設定してください")
     core.quit()
 
+# GVSコントローラーの初期化
+gvs_controller = None
+if USE_GVS:
+    print("GVS制御を初期化中...")
+    gvs_controller = GVSController(GVS_SERIAL_PORT, GVS_BAUDRATE)
+    if gvs_controller.connect():
+        print("GVS制御が正常に初期化されました")
+        # デフォルト振幅を設定（必要に応じて調整）
+        gvs_controller.set_amplitude(127)  # 半分の強度
+    else:
+        print("GVS制御の初期化に失敗しました。GVS刺激なしで続行します。")
+        gvs_controller = None
+else:
+    print("GVS刺激は無効です")
+
 experiment_running = True
 trial_idx = 1
 response_mapping = {'r': 'red', 'g': 'green'}
@@ -828,6 +912,12 @@ try:
             print(f"Trial {trial_idx}: シリアル測定開始コマンドを送信")
             serial_comm.start_measurement()
             time.sleep(0.1)  # 測定開始の確認
+
+        # ----- GVS刺激開始 -----
+        if USE_GVS and gvs_controller:
+            print(f"Trial {trial_idx}: GVS刺激開始")
+            gvs_controller.start_stimulation()
+            time.sleep(0.05)  # GVS開始の確認
 
         # ----- 刺激提示 & 応答取得 -----
         participant_response = 'no_response'
@@ -899,12 +989,18 @@ try:
             green_dot_positions.append(green_mean_xy.tolist())
             timestamps.append(now)
 
-            red_dots.draw()
+#            red_dots.draw()
             green_dots.draw()
             win.flip()
 
         if stereo_snd and stereo_snd.status != constants.STOPPED:
             stereo_snd.stop()
+
+        # ----- GVS刺激停止 -----
+        if USE_GVS and gvs_controller:
+            print(f"Trial {trial_idx}: GVS刺激停止")
+            gvs_controller.stop_stimulation()
+            time.sleep(0.05)  # GVS停止の確認
 
         # ----- 測定停止とデータ取得 -----
         accel_data = []
@@ -1019,6 +1115,12 @@ finally:
     elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
         serial_comm.stop()
         print("シリアル通信を停止しました")
+    
+    # GVS制御を安全に停止
+    if USE_GVS and gvs_controller:
+        gvs_controller.stop_stimulation()
+        gvs_controller.disconnect()
+        print("GVS制御を停止しました")
 
     if stereo_snd and stereo_snd.status != constants.STOPPED:
         stereo_snd.stop()

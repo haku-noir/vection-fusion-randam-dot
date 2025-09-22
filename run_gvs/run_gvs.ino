@@ -7,7 +7,7 @@ const int dacPin26 = 26;
 
 // sine params
 const float sineFreq = 0.1;   // Hz
-const int duration = 30;      // seconds
+const int duration = 180;     // seconds (audiovisual_experimentに合わせて180秒)
 
 // amplitude control
 // amplitudeScaled: 0..255 used for dacWrite
@@ -31,8 +31,8 @@ void setup() {
   dacWrite(dacPin26, 0);
 
   Serial.println("Ready. Commands:");
-  Serial.println(" s = start (requires pin18 HIGH)");
-  Serial.println(" x = stop");
+  Serial.println(" START_GVS = start GVS stimulation");
+  Serial.println(" STOP_GVS = stop GVS stimulation");
   Serial.println(" V<0-255> = set amplitude (e.g. V128)");
   Serial.print(" Use potentiometer: "); Serial.println(USE_POT ? "ENABLED" : "disabled");
 }
@@ -58,19 +58,34 @@ void loop() {
     if (c == '\r' || c == '\n') {
       if (serialBuf.length() > 0) {
         // process command
-        if (serialBuf == "s") {
-          if (digitalRead(inputPin) == HIGH && !active) {
+        if (serialBuf == "START_GVS") {
+          if (!active) {
             active = true;
             startMillis = millis();
-            Serial.println(">>> START (30s) <<<");
+            Serial.println(">>> GVS START (180s) <<<");
           } else {
-            Serial.println("Pin18 not HIGH or already active.");
+            Serial.println("GVS already active.");
           }
-        } else if (serialBuf == "x") {
+        } else if (serialBuf == "STOP_GVS") {
           active = false;
           dacWrite(dacPin25, 0);
           dacWrite(dacPin26, 0);
-          Serial.println(">>> STOP <<<");
+          Serial.println(">>> GVS STOP <<<");
+        } else if (serialBuf == "s") {
+          // 後方互換性のため古いコマンドも維持
+          if (!active) {
+            active = true;
+            startMillis = millis();
+            Serial.println(">>> GVS START (180s) <<<");
+          } else {
+            Serial.println("GVS already active.");
+          }
+        } else if (serialBuf == "x") {
+          // 後方互換性のため古いコマンドも維持
+          active = false;
+          dacWrite(dacPin25, 0);
+          dacWrite(dacPin26, 0);
+          Serial.println(">>> GVS STOP <<<");;
         } else if (serialBuf[0] == 'V') {
           // parse amplitude value after 'V'
           String num = serialBuf.substring(1);
@@ -101,7 +116,7 @@ void loop() {
       dacWrite(dacPin25, 0);
       dacWrite(dacPin26, 0);
       active = false;
-      Serial.println(">>> Auto STOP after 30s <<<");
+      Serial.println(">>> Auto GVS STOP after 180s <<<");
       return;
     }
 

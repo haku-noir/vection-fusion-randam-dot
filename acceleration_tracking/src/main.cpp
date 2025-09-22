@@ -11,7 +11,7 @@ IPAddress pc_ip;
 // データ保存用構造体
 struct AccelData {
   unsigned long timestamp;  // マイクロ秒
-  float x, y, z;           // 加速度データ (m/s^2)
+  float x, y, z;           // 加速度(m/s^2)
 };
 
 // データ保存用バッファ
@@ -34,13 +34,25 @@ bool DO_CALIBRATION = false;
 float offset_x = 0.0, offset_y = 0.0, offset_z = 0.0;
 bool calibrated = false;
 
+// 通信方式選択
+enum CommunicationMode {
+  WIFI_MODE,
+  SERIAL_MODE
+};
+
+// 通信モード設定（変更はここで）
+CommunicationMode COMMUNICATION_MODE = SERIAL_MODE;  // WIFI_MODE または SERIAL_MODE
+
 // 関数の前方宣言
 void checkUDPCommands();
+void checkSerialCommands();
 void collectAccelData();
 void updateDisplay();
 void startMeasurement();
 void stopMeasurement();
+void stopMeasurement();
 void sendDataToPC();
+void sendDataViaSerial(const AccelData& data);
 void calibrateAccelerometer();
 
 void setup() {
@@ -57,27 +69,37 @@ void setup() {
   M5.Lcd.setTextSize(2);
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setCursor(0, 0);
-  M5.Lcd.println("Wireless Accel");
-  M5.Lcd.println("Connecting WiFi...");
 
-  // PCのIPアドレスを設定
-  pc_ip.fromString(PC_IP_STR);
+  if (COMMUNICATION_MODE == WIFI_MODE) {
+    M5.Lcd.println("Wireless Accel");
+    M5.Lcd.println("Connecting WiFi...");
 
-  // WiFi接続
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    M5.Lcd.print(".");
+    // PCのIPアドレスを設定
+    pc_ip.fromString(PC_IP_STR);
+
+    // WiFi接続
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+      delay(1000);
+      M5.Lcd.print(".");
+    }
+
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.println("WiFi Connected!");
+    M5.Lcd.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+    M5.Lcd.printf("Port: %d\n", M5_PORT);
+
+    // UDP開始
+    udp.begin(M5_PORT);
+    M5.Lcd.println("Ready for commands");
+    Serial.println("M5Stack ready for wireless communication");
+  } else {
+    M5.Lcd.println("Serial Accel");
+    M5.Lcd.println("Serial Mode");
+    M5.Lcd.println("Ready for serial");
+    Serial.println("M5Stack ready for serial communication");
   }
-
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.println("WiFi Connected!");
-  M5.Lcd.printf("IP: %s\n", WiFi.localIP().toString().c_str());
-  M5.Lcd.printf("Port: %d\n", M5_PORT);
-
-  // UDP開始
-  udp.begin(M5_PORT);
 
   // バッファを予約
   accel_buffer.reserve(MAX_BUFFER_SIZE);
@@ -89,15 +111,39 @@ void setup() {
     M5.Lcd.println("Calibration complete");
   }
 
-  M5.Lcd.println("Ready for commands");
-  Serial.println("M5Stack ready for wireless communication");
+  // シリアルモードの場合は待機状態で開始（PC側からの開始コマンドを待つ）
+  if (COMMUNICATION_MODE == SERIAL_MODE) {
+    measuring = false;  // 自動開始をやめて待機状態に
+    Serial.println("Serial mode: Waiting for START command from PC");
+    Serial.printf("Buffer capacity: %d samples\n", MAX_BUFFER_SIZE);
+    Serial.printf("Sampling rate: 120Hz (every 8.33ms)\n");
+    Serial.println("IMU initialization status check...");
+    
+    // IMU動作確認
+    float testX, testY, testZ;
+    M5.IMU.getAccelData(&testX, &testY, &testZ);
+    Serial.printf("Initial IMU reading: X=%.3f, Y=%.3f, Z=%.3f [g]\n", testX, testY, testZ);
+    
+    if (testX == 0.0 && testY == 0.0 && testZ == 0.0) {
+      Serial.println("ERROR: IMU appears to be not responding!");
+    } else {
+      Serial.println("IMU appears to be working correctly");
+    }
+    
+    M5.Lcd.println("Waiting for START...");
+    M5.Lcd.printf("IMU: %.2f,%.2f,%.2f", testX, testY, testZ);
+  }
 }
 
 void loop() {
   M5.update();
 
-  // UDP パケットの受信チェック
-  checkUDPCommands();
+  // 通信モードに応じてコマンドの受信チェック
+  if (COMMUNICATION_MODE == WIFI_MODE) {
+    checkUDPCommands();
+  } else if (COMMUNICATION_MODE == SERIAL_MODE) {
+    checkSerialCommands();  // シリアルコマンドチェックを追加
+  }
 
   // 測定中の場合、加速度データを収集
   if (measuring) {
@@ -138,10 +184,15 @@ void startMeasurement() {
   measurement_start_time = micros();
   accel_buffer.clear();
 
-  // PCに開始確認を送信
-  udp.beginPacket(pc_ip, PC_PORT);
-  udp.print("MEASUREMENT_STARTED");
-  udp.endPacket();
+  // WiFiモードの場合のみUDP送信
+  if (COMMUNICATION_MODE == WIFI_MODE) {
+    udp.beginPacket(pc_ip, PC_PORT);
+    udp.print("MEASUREMENT_STARTED");
+    udp.endPacket();
+  }
+
+  // シリアル経由でも開始通知
+  Serial.println("MEASUREMENT_START");
 
   Serial.printf("Measurement started. Buffer capacity: %d samples\n", MAX_BUFFER_SIZE);
   Serial.printf("Expected capacity for 60s at 120Hz: 7,200 samples\n");
@@ -150,12 +201,58 @@ void startMeasurement() {
 void stopMeasurement() {
   measuring = false;
 
-  // PCに停止確認を送信
-  udp.beginPacket(pc_ip, PC_PORT);
-  udp.print("MEASUREMENT_STOPPED");
-  udp.endPacket();
+  // WiFiモードの場合のみUDP送信
+  if (COMMUNICATION_MODE == WIFI_MODE) {
+    udp.beginPacket(pc_ip, PC_PORT);
+    udp.print("MEASUREMENT_STOPPED");
+    udp.endPacket();
+  }
+
+  // シリアル経由でも停止通知
+  Serial.println("MEASUREMENT_STOP");
 
   Serial.printf("Measurement stopped. Collected %d samples\n", accel_buffer.size());
+}
+
+void checkSerialCommands() {
+  // シリアルコマンドをチェック
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    
+    Serial.printf("Received serial command: '%s'\n", command.c_str());
+    
+    if (command == "START_MEASUREMENT") {
+      if (!measuring) {
+        startMeasurement();
+        Serial.println("MEASUREMENT_STARTED");
+      } else {
+        Serial.println("Already measuring");
+      }
+    } else if (command == "STOP_MEASUREMENT") {
+      if (measuring) {
+        stopMeasurement();
+        Serial.println("MEASUREMENT_STOPPED");
+      } else {
+        Serial.println("Not measuring");
+      }
+    } else if (command == "SEND_DATA") {
+      // シリアルモードでは即座にデータ送信開始
+      Serial.println("DATA_START");
+      Serial.printf("Sending %d data points via serial\n", accel_buffer.size());
+      
+      // シリアル経由でデータを送信
+      for (const auto& data : accel_buffer) {
+        Serial.printf("ACCEL_DATA,%lu,%.6f,%.6f,%.6f\n", 
+                      data.timestamp, data.x, data.y, data.z);
+      }
+      
+      Serial.println("DATA_END");
+      Serial.printf("Serial data transmission completed: %d samples\n", accel_buffer.size());
+    } else {
+      Serial.printf("Unknown command: '%s'\n", command.c_str());
+    }
+  }
 }
 
 void collectAccelData() {
@@ -196,9 +293,35 @@ void collectAccelData() {
   data.z = raw_z - offset_z;
 
   accel_buffer.push_back(data);
+
+  // デバッグ: 最初の数回はデータを表示
+  static int debug_count = 0;
+  if (debug_count < 10) {
+    Serial.printf("DEBUG: Accel data #%d: timestamp=%lu, x=%.6f, y=%.6f, z=%.6f\n", 
+                  debug_count, data.timestamp, data.x, data.y, data.z);
+    debug_count++;
+  }
+  
+  // 定期的な収集状況報告
+  static unsigned long last_report = 0;
+  if (millis() - last_report > 5000) {  // 5秒ごと
+    Serial.printf("Collection status: %d samples collected, rate: %.1f Hz\n", 
+                  accel_buffer.size(), 
+                  accel_buffer.size() / ((millis() - measurement_start_time/1000) + 0.001));
+    last_report = millis();
+  }
+
+  // 測定中はリアルタイムでデータを送信
+  sendDataViaSerial(data);
 }
 
 void sendDataToPC() {
+  // WiFiモードの場合のみ実行
+  if (COMMUNICATION_MODE != WIFI_MODE) {
+    Serial.println("sendDataToPC: Not in WiFi mode, skipping data transmission");
+    return;
+  }
+
   Serial.printf("Sending %d data points to PC\n", accel_buffer.size());
 
   // データをJSON形式で送信（遅延を最小化）
@@ -323,4 +446,12 @@ void calibrateAccelerometer() {
   Serial.printf("Offsets: X=%.3f, Y=%.3f, Z=%.3f\n", offset_x, offset_y, offset_z);
 
   calibrated = true;
+}
+
+// シリアル経由でリアルタイムにデータを送信
+void sendDataViaSerial(const AccelData& data) {
+  // CSVフォーマットでシリアル送信
+  // フォーマット: ACCEL_DATA,timestamp,x,y,z
+  Serial.printf("ACCEL_DATA,%lu,%.6f,%.6f,%.6f\n", 
+                data.timestamp, data.x, data.y, data.z);
 }

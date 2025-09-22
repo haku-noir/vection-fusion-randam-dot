@@ -37,6 +37,8 @@ import time
 from collections import deque
 import pandas as pd
 import matplotlib.pyplot as plt
+import serial
+import serial.tools.list_ports
 
 
 # ------------------------------------------------------------------
@@ -46,6 +48,19 @@ import matplotlib.pyplot as plt
 M5_IP = '192.168.1.235'  # M5StackのIPアドレス（M5Stackの画面で確認して設定）
 M5_PORT = 12346          # M5Stackが待機するポート
 PC_PORT = 12345          # PCが待機するポート
+
+# シリアル通信設定
+SERIAL_PORT = "/dev/cu.wchusbserial556F0046031"       # 自動検出（もしくは '/dev/cu.usbserial-xxx' などを指定）
+SERIAL_BAUDRATE = 115200 # M5Stackのボーレート
+
+# 通信方式選択（どちらか一つのみ選択）
+# WiFi通信を使用する場合：
+#   COMMUNICATION_MODE = 'WIFI'
+#   M5Stack側でも COMMUNICATION_MODE = WIFI_MODE に設定
+# シリアル通信を使用する場合：
+#   COMMUNICATION_MODE = 'SERIAL'
+#   M5Stack側でも COMMUNICATION_MODE = SERIAL_MODE に設定
+COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
 # 音源の情報を保持するクラス
 class SoundSource:
@@ -109,6 +124,203 @@ os.makedirs(LOG_DIR, exist_ok=True)
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 MAIN_LOG_FILENAME = f'{timestamp}_experiment_log.csv'
 MAIN_LOG_PATH = os.path.join(LOG_DIR, MAIN_LOG_FILENAME)
+
+# M5Stackとのシリアル通信を管理するクラス
+class SerialCommunicator:
+    def __init__(self, port=None, baudrate=115200):
+        self.port = port
+        self.baudrate = baudrate
+        self.serial_connection = None
+        self.running = False
+        self.thread = None
+        self.lock = threading.Lock()
+        self.accel_data_buffer = deque()
+        self.measuring = False
+
+    def find_m5stack_port(self):
+        """M5Stack（ESP32）のシリアルポートを自動検出"""
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            # macOSでのUSBシリアルポート名パターン
+            if ('usbserial' in port.device or 'usbmodem' in port.device or
+                'SLAB_USBtoUART' in str(port.description) or
+                'Silicon Labs' in str(port.manufacturer)):
+                print(f"M5Stack候補ポート発見: {port.device} - {port.description}")
+                return port.device
+        return None
+
+    def start(self):
+        """シリアル通信開始"""
+        try:
+            if self.port is None:
+                self.port = self.find_m5stack_port()
+                if self.port is None:
+                    print("M5Stackのシリアルポートが見つかりません")
+                    return False
+
+            print(f"シリアル接続を開始: {self.port} @ {self.baudrate}")
+            self.serial_connection = serial.Serial(self.port, self.baudrate, timeout=1)
+            time.sleep(2)  # 接続安定化のための待機
+
+            self.running = True
+            self.thread = threading.Thread(target=self.read_serial_data)
+            self.thread.daemon = True
+            self.thread.start()
+
+            print("シリアル通信開始完了")
+            return True
+
+        except Exception as e:
+            print(f"シリアル接続エラー: {e}")
+            return False
+
+    def stop(self):
+        """シリアル通信停止"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+        if self.serial_connection:
+            self.serial_connection.close()
+
+    def read_serial_data(self):
+        """シリアルデータを読み込むスレッド"""
+        line_count = 0
+        raw_line_count = 0
+        accel_line_count = 0
+
+        print("シリアルデータ読み込みスレッドを開始しました")
+
+        while self.running:
+            try:
+                if self.serial_connection and self.serial_connection.in_waiting > 0:
+                    line = self.serial_connection.readline().decode('utf-8').strip()
+                    raw_line_count += 1
+
+                    if line:  # 空行でない場合のみ処理
+                        line_count += 1
+
+                        # デバッグ: 最初の10行と定期的な行を表示
+                        if line_count <= 10 or line_count % 500 == 0:
+                            print(f"シリアル受信[{line_count}]: {line}")
+
+                        # 加速度データの処理
+                        if line.startswith("ACCEL_DATA,"):
+                            accel_line_count += 1
+                            if accel_line_count <= 5 or accel_line_count % 100 == 0:
+                                print(f"加速度データ[{accel_line_count}]: {line}")
+
+                        self.process_serial_line(line)
+
+                # 受信データの統計を定期的に報告
+                if raw_line_count > 0 and raw_line_count % 1000 == 0:
+                    print(f"シリアル統計: raw_lines={raw_line_count}, valid_lines={line_count}, accel_lines={accel_line_count}")
+
+                time.sleep(0.001)  # 1ms待機
+            except Exception as e:
+                if self.running:  # 停止中でない場合のみエラー表示
+                    print(f"シリアルデータ読み込みエラー: {e}")
+                time.sleep(0.01)  # エラー時は少し長めに待機
+
+    def process_serial_line(self, line):
+        """受信したシリアル行を処理"""
+        if line.startswith("ACCEL_DATA,"):
+            # フォーマット: ACCEL_DATA,timestamp,x,y,z
+            try:
+                parts = line.split(',')
+                if len(parts) == 5:
+                    timestamp = int(parts[1])
+                    x = float(parts[2])
+                    y = float(parts[3])
+                    z = float(parts[4])
+
+                    with self.lock:
+                        self.accel_data_buffer.append((timestamp, x, y, z))
+                        # デバッグ: バッファサイズを定期的に報告
+                        if len(self.accel_data_buffer) % 1000 == 0:
+                            print(f"加速度データバッファサイズ: {len(self.accel_data_buffer)}")
+                else:
+                    print(f"加速度データフォーマットエラー: 要素数={len(parts)}, line='{line}'")
+
+            except Exception as e:
+                print(f"加速度データ解析エラー: {e} (line: '{line}')")
+
+        elif line == "MEASUREMENT_STARTED":
+            print("M5Stack: 測定開始確認（シリアル経由）")
+            self.measuring = True
+
+        elif line == "MEASUREMENT_STOPPED":
+            print("M5Stack: 測定停止確認（シリアル経由）")
+            self.measuring = False
+
+        elif line == "DATA_START":
+            print("M5Stack: データ送信開始")
+
+        elif line == "DATA_END":
+            print("M5Stack: データ送信完了")
+
+        elif line.startswith("Sending") and "data points" in line:
+            print(f"M5Stack: {line}")
+
+        elif line.startswith("Serial data transmission completed"):
+            print(f"M5Stack: {line}")
+
+        elif line == "MEASUREMENT_START":
+            print("M5Stack: 測定開始（シリアル経由）")
+            self.measuring = True
+
+        elif line == "MEASUREMENT_STOP":
+            print("M5Stack: 測定停止（シリアル経由）")
+            self.measuring = False
+
+        elif "Auto-measurement started" in line:
+            print(f"M5Stack: {line}")
+
+        elif "Buffer capacity" in line or "Sampling rate" in line:
+            print(f"M5Stack: {line}")
+
+        elif line.startswith("DEBUG:"):
+            print(f"M5Stack Debug: {line}")
+
+        else:
+            # その他のメッセージもデバッグ出力（起動メッセージ以外）
+            if line and not line.startswith("M5Stack ready") and not line.startswith("ets") and not line.startswith("configsip") and not line.startswith("mode"):
+                print(f"シリアル受信（その他）: {line}")
+
+    def get_accel_data(self):
+        """蓄積された加速度データを取得"""
+        with self.lock:
+            data = list(self.accel_data_buffer)
+            self.accel_data_buffer.clear()
+            return data
+
+    def send_command(self, command):
+        """M5Stackにシリアルコマンドを送信"""
+        try:
+            if self.serial_connection:
+                command_with_newline = command + '\n'
+                self.serial_connection.write(command_with_newline.encode('utf-8'))
+                print(f"シリアルコマンド送信: {command}")
+                return True
+        except Exception as e:
+            print(f"シリアルコマンド送信エラー: {e}")
+        return False
+
+    def start_measurement(self):
+        """測定開始コマンドを送信"""
+        return self.send_command("START_MEASUREMENT")
+
+    def stop_measurement(self):
+        """測定停止コマンドを送信"""
+        return self.send_command("STOP_MEASUREMENT")
+
+    def request_data(self):
+        """データ送信要求コマンドを送信"""
+        return self.send_command("SEND_DATA")
+
+    def get_all_accel_data(self):
+        """全ての蓄積された加速度データを取得（クリアしない）"""
+        with self.lock:
+            return list(self.accel_data_buffer)
 
 # M5Stackとの無線通信を管理するクラス
 class UDPCommunicator(threading.Thread):
@@ -325,6 +537,98 @@ def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
 
     return sound.Sound(value=stereo, sampleRate=SAMPLE_RATE, stereo=True, hamming=True)
 
+# 加速度データとドット位置データを統合してDataFrameを作成する共通関数
+def create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps):
+    """加速度データとドット位置データを統合してDataFrameを作成"""
+    df_data = []
+
+    if not accel_data or not timestamps:
+        print("Warning: accel_data または timestamps が空です")
+        return pd.DataFrame()
+
+    # 加速度データを時間でソート
+    accel_data_sorted = sorted(accel_data, key=lambda x: x[0])
+
+    print(f"Debug: accel_data_sorted の最初と最後の要素: {accel_data_sorted[0]} ... {accel_data_sorted[-1]}")
+    print(f"Debug: timestamps の範囲: {min(timestamps):.6f} - {max(timestamps):.6f}")
+
+    # ドット位置データを加速度データに同期
+    for i, (timestamp_us, x, y, z) in enumerate(accel_data_sorted):
+        # M5Stackの相対時間（マイクロ秒）を秒に変換
+        accel_time_s = timestamp_us / 1000000.0
+
+        # PsychoPyの試行開始からの時間に対応させる
+        # 最も近い時刻のドット位置を見つける
+        if timestamps:
+            # timestampsは試行開始からの時間なので、accel_time_sと比較
+            closest_idx = min(range(len(timestamps)), 
+                            key=lambda j: abs(timestamps[j] - accel_time_s))
+
+            red_pos = red_dot_positions[closest_idx] if closest_idx < len(red_dot_positions) else [0, 0]
+            green_pos = green_dot_positions[closest_idx] if closest_idx < len(green_dot_positions) else [0, 0]
+
+            # デバッグ情報（最初の数個のみ）
+            if i < 5:
+                print(f"Debug[{i}]: accel_time={accel_time_s:.6f}, closest_psychopy_time={timestamps[closest_idx]:.6f}, red_pos={red_pos}, green_pos={green_pos}")
+        else:
+            red_pos = [0, 0]
+            green_pos = [0, 0]
+
+        df_data.append([
+            accel_time_s, accel_time_s, x, y, z,  # psychopy_timeとaccel_timeを同じ値に
+            red_pos[0], red_pos[1],
+            green_pos[0], green_pos[1]
+        ])
+
+    return pd.DataFrame(df_data, columns=[
+        'psychopy_time', 'accel_time', 'accel_x', 'accel_y', 'accel_z',
+        'red_dot_mean_x', 'red_dot_mean_y', 
+        'green_dot_mean_x', 'green_dot_mean_y'
+    ])
+
+# 統一されたグラフ作成・表示関数
+def create_and_show_acceleration_graph(df, trial_idx, graph_path, communication_type=''):
+    """加速度データとドット位置の統一グラフを作成・表示"""
+    if df.empty:
+        print(f"Trial {trial_idx}: DataFrame is empty. Skipping graph.")
+        return
+
+    plt.figure(figsize=(15, 8))
+
+    # 左側のY軸（加速度データ）
+    ax1 = plt.gca()
+    line1 = ax1.plot(df['psychopy_time'], df['accel_x'], 'b-', linewidth=1, label='Accel X [g]')
+    line2 = ax1.plot(df['psychopy_time'], df['accel_y'], 'g-', linewidth=1, label='Accel Y [g]')
+    line3 = ax1.plot(df['psychopy_time'], df['accel_z'], 'r-', linewidth=1, label='Accel Z [g]')
+
+    ax1.set_xlabel('PsychoPy Time [s]')
+    ax1.set_ylabel('Acceleration [g]', color='black')
+    ax1.tick_params(axis='y', labelcolor='black')
+    ax1.grid(True)
+    ax1.set_title(f'Trial {trial_idx}: {communication_type} Accelerometer Data and Dot Position')
+
+    # 右側のY軸（ドット位置データ）
+    ax2 = ax1.twinx()
+    line4 = ax2.plot(df['psychopy_time'], df['red_dot_mean_x'], 'orange', linewidth=2, linestyle='--', label='Red Dot X [pix]')
+    line5 = ax2.plot(df['psychopy_time'], df['green_dot_mean_x'], 'darkgreen', linewidth=2, linestyle='--', label='Green Dot X [pix]')
+
+    ax2.set_ylabel('Dot Position X [pix]', color='black')
+    ax2.tick_params(axis='y', labelcolor='black')
+
+    # 凡例を統合
+    lines = line1 + line2 + line3 + line4 + line5
+    labels = [l.get_label() for l in lines]
+    ax1.legend(lines, labels, loc='upper right')
+
+    plt.tight_layout()
+
+    # グラフをファイルに保存
+    plt.savefig(graph_path, dpi=300, bbox_inches='tight')
+    print(f"グラフを保存しました: {graph_path}")
+
+    # グラフを表示
+    plt.show()
+
 # 加速度グラフを保存（修正版）
 def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
     """WiFi経由で受信した加速度データとドット座標からグラフを生成"""
@@ -332,6 +636,67 @@ def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_p
         if not accel_data or not timestamps:
             print(f"Trial {trial_idx}: No data available. Skipping graph.")
             return
+
+        # DataFrameを作成
+        df = create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps)
+
+        if df.empty:
+            print(f"Trial {trial_idx}: DataFrame is empty. Skipping graph.")
+            return
+
+        # ファイルパス準備
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.png')
+        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.csv')
+
+        # グラフを作成・表示
+        create_and_show_acceleration_graph(df, trial_idx, graph_path, 'WiFi')
+
+        # CSVファイルも保存
+        df.to_csv(csv_path, index=False)
+        print(f"Saved data to {csv_path}")
+
+    except Exception as e:
+        print(f"Error creating graph for trial {trial_idx}: {e}")
+
+def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
+    """シリアル経由で受信した加速度データをCSVファイルに保存し、グラフを表示（ドット位置データ付き）"""
+    try:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.csv')
+
+        # DataFrameを作成
+        df = create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps)
+
+        if df.empty:
+            print(f"Trial {trial_idx}: No data available. Skipping graph.")
+            return
+
+        # CSVファイルに保存
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            # ヘッダー行
+            writer.writerow(['psychopy_time', 'accel_time', 'accel_x', 'accel_y', 'accel_z', 'red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y'])
+
+            # データ行
+            for _, row in df.iterrows():
+                writer.writerow(row.tolist())
+
+        print(f"シリアル加速度データを保存しました: {csv_path}")
+        print(f"データポイント数: {len(accel_data)}")
+
+        # グラフを作成・表示
+        graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.png')
+        create_and_show_acceleration_graph(df, trial_idx, graph_path, 'Serial')
+
+    except Exception as e:
+        print(f"シリアル加速度データ保存・グラフ作成エラー: {e}")
+
+def save_serial_acceleration_data(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
+    """シリアル経由で受信した加速度データをCSVファイルに保存（ドット位置データ付き）"""
+    try:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.csv')
 
         # DataFrameを作成
         df_data = []
@@ -344,72 +709,35 @@ def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_p
             timestamp_s = timestamp_us / 1000000.0  # マイクロ秒を秒に変換
 
             # 最も近い時刻のドット位置を見つける
-            closest_idx = min(range(len(timestamps)), 
-                             key=lambda i: abs(timestamps[i] - timestamp_s))
-
-            red_pos = red_dot_positions[closest_idx] if closest_idx < len(red_dot_positions) else [0, 0]
-            green_pos = green_dot_positions[closest_idx] if closest_idx < len(green_dot_positions) else [0, 0]
+            if timestamps:
+                closest_idx = min(range(len(timestamps)), 
+                                key=lambda i: abs(timestamps[i] - timestamp_s))
+                red_pos = red_dot_positions[closest_idx] if closest_idx < len(red_dot_positions) else [0, 0]
+                green_pos = green_dot_positions[closest_idx] if closest_idx < len(green_dot_positions) else [0, 0]
+            else:
+                red_pos = [0, 0]
+                green_pos = [0, 0]
 
             df_data.append([
-                timestamp_s, x, y, z,
+                timestamp_s, timestamp_s, x, y, z,  # accel_timeとpsychopy_timeを両方追加
                 red_pos[0], red_pos[1],
                 green_pos[0], green_pos[1]
             ])
 
-        df = pd.DataFrame(df_data, columns=[
-            'psychopy_time', 'accel_x', 'accel_y', 'accel_z',
-            'red_dot_mean_x', 'red_dot_mean_y', 
-            'green_dot_mean_x', 'green_dot_mean_y'
-        ])
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            # ヘッダー行（加速度時間カラムを追加）
+            writer.writerow(['psychopy_time', 'accel_time', 'accel_x', 'accel_y', 'accel_z', 'red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y'])
 
-        if df.empty:
-            print(f"Trial {trial_idx}: DataFrame is empty. Skipping graph.")
-            return
+            # データ行
+            for row in df_data:
+                writer.writerow(row)
 
-        # グラフを作成
-        fig, ax1 = plt.subplots(figsize=(15, 8))
-
-        # 加速度データをプロット
-        ax1.plot(df['psychopy_time'], df['accel_x'], label='Accel X', color='royalblue', alpha=0.8)
-        ax1.plot(df['psychopy_time'], df['accel_y'], label='Accel Y', color='seagreen', alpha=0.8)
-        ax1.plot(df['psychopy_time'], df['accel_z'], label='Accel Z', color='darkred', alpha=0.8)
-        ax1.set_xlabel("Time (s)")
-        ax1.set_ylabel("Acceleration (m/s^2)", color='black')
-        ax1.tick_params(axis='y', labelcolor='black')
-        ax1.grid(True)
-
-        # 右側のY軸（ドットのX座標）を作成
-        ax2 = ax1.twinx()
-        ax2.plot(df['psychopy_time'], df['red_dot_mean_x'], label='Red Dot Mean X', color='orange', linestyle='--')
-        ax2.plot(df['psychopy_time'], df['green_dot_mean_x'], label='Green Dot Mean X', color='green', linestyle='--')
-        ax2.set_ylabel("Dot Mean X Position (pixels)", color='black')
-        ax2.tick_params(axis='y', labelcolor='black')
-
-        plt.title(f"Trial {trial_idx}: Wireless Accelerometer Data and Dot Position")
-
-        # 凡例を結合
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax2.legend(lines1 + lines2, labels1 + labels2, loc='best')
-
-        fig.tight_layout()
-
-        # グラフとCSVを保存
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.png')
-        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.csv')
-
-        plt.savefig(graph_path)
-        plt.close(fig)
-
-        # CSVファイルも保存
-        df.to_csv(csv_path, index=False)
-
-        print(f"Saved graph to {graph_path}")
-        print(f"Saved data to {csv_path}")
+        print(f"シリアル加速度データを保存しました: {csv_path}")
+        print(f"データポイント数: {len(accel_data)}")
 
     except Exception as e:
-        print(f"Error creating graph for trial {trial_idx}: {e}")
+        print(f"シリアル加速度データ保存エラー: {e}")
 
 # ------------------------------------------------------------------
 # 5. ログファイルオープン
@@ -434,16 +762,35 @@ except IOError as e:
 # ------------------------------------------------------------------
 # 6. メイン実験ループ
 # ------------------------------------------------------------------
-# UDP通信スレッドを開始
-udp_comm = UDPCommunicator(M5_IP, M5_PORT, PC_PORT)
-udp_comm.start()
+# 通信方式に応じて初期化
+udp_comm = None
+serial_comm = None
 
-# 通信の確立を待つ
-print("Waiting for UDP connection...")
-time.sleep(2.0)
+if COMMUNICATION_MODE == 'WIFI':
+    print("WiFi通信モードで開始します")
+    udp_comm = UDPCommunicator(M5_IP, M5_PORT, PC_PORT)
+    udp_comm.start()
 
-if not udp_comm.running:
-    print("Failed to start UDP communicator. Continuing without accelerometer data.")
+    # 通信の確立を待つ
+    print("Waiting for UDP connection...")
+    time.sleep(2.0)
+
+    if not udp_comm.running:
+        print("Failed to start UDP communicator. Exiting.")
+        core.quit()
+
+elif COMMUNICATION_MODE == 'SERIAL':
+    print("シリアル通信モードで開始します")
+    serial_comm = SerialCommunicator(SERIAL_PORT, SERIAL_BAUDRATE)
+    if not serial_comm.start():
+        print("シリアル通信の開始に失敗しました。プログラムを終了します。")
+        core.quit()
+    print("シリアル通信が正常に開始されました")
+
+else:
+    print(f"無効な通信モード: {COMMUNICATION_MODE}")
+    print("COMMUNICATION_MODEを 'WIFI' または 'SERIAL' に設定してください")
+    core.quit()
 
 experiment_running = True
 trial_idx = 1
@@ -472,10 +819,15 @@ try:
         stereo_snd = build_multi_stereo_sound(sync_red, PANNING_MODE)
 
         # ----- 測定開始 -----
-        if udp_comm.running:
+        if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
             udp_comm.clear_data()
             udp_comm.start_measurement()
             time.sleep(0.05)  # 測定開始の確認を短縮
+        elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
+            # シリアル通信の場合は測定開始コマンドを送信
+            print(f"Trial {trial_idx}: シリアル測定開始コマンドを送信")
+            serial_comm.start_measurement()
+            time.sleep(0.1)  # 測定開始の確認
 
         # ----- 刺激提示 & 応答取得 -----
         participant_response = 'no_response'
@@ -555,7 +907,10 @@ try:
             stereo_snd.stop()
 
         # ----- 測定停止とデータ取得 -----
-        if udp_comm.running:
+        accel_data = []
+
+        if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
+            # WiFi通信の場合
             udp_comm.stop_measurement()
             time.sleep(0.05)  # 測定停止の確認を短縮
 
@@ -572,13 +927,58 @@ try:
 
             # 受信したデータを取得
             accel_data = udp_comm.get_accel_data()
-            print(f"Retrieved {len(accel_data)} acceleration data points")
+            print(f"Retrieved {len(accel_data)} acceleration data points via WiFi")
 
             # グラフを生成
             save_acceleration_graph_from_data(
                 accel_data, red_dot_positions, green_dot_positions, 
                 timestamps, trial_idx, LOG_DIR
             )
+
+        elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
+            # シリアル通信の場合
+            print("シリアル測定停止コマンドを送信")
+            serial_comm.stop_measurement()
+            time.sleep(0.1)  # 測定停止の確認
+
+            # リアルタイムで蓄積されたデータを取得（request_data不要）
+            accel_data = serial_comm.get_all_accel_data()
+            print(f"Retrieved {len(accel_data)} acceleration data points via Serial (realtime)")
+
+            # バッファ状況を詳細に報告
+            if len(accel_data) == 0:
+                print("警告: 加速度データが全く受信されていません")
+                print("M5Stackの状態を確認してください:")
+                print("1. M5Stackが正常に起動しているか")
+                print("2. IMUセンサーが正常に動作しているか")
+                print("3. シリアル通信モードが有効になっているか")
+            else:
+                print(f"最初のデータ: {accel_data[0]}")
+                print(f"最後のデータ: {accel_data[-1]}")
+
+                # 時間オフセットを調整（M5Stackの相対時間を試行開始時間に合わせる）
+                if accel_data and timestamps:
+                    # M5Stackの最初のタイムスタンプが0に近い場合は、そのまま使用
+                    # そうでない場合は、最小タイムスタンプを0として正規化
+                    min_accel_time = min(data[0] for data in accel_data) / 1000000.0
+                    print(f"M5Stack最小時間: {min_accel_time:.6f}秒")
+
+                    # M5Stack時間を正規化（最小時間を0として開始）
+                    normalized_accel_data = []
+                    for timestamp_us, x, y, z in accel_data:
+                        normalized_time_us = timestamp_us - (min_accel_time * 1000000)
+                        normalized_accel_data.append((normalized_time_us, x, y, z))
+
+                    accel_data = normalized_accel_data
+                    print(f"正規化後の最初のデータ: {accel_data[0]}")
+                    print(f"正規化後の最後のデータ: {accel_data[-1]}")
+
+            # シリアルデータをCSVファイルに保存し、グラフを表示
+            if accel_data:
+                save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, LOG_DIR)
+
+            # 次の試行のためにバッファをクリア
+            serial_comm.get_accel_data()
 
         if not experiment_running:
             break
@@ -612,9 +1012,14 @@ try:
 except Exception as e:
     print(f"エラーが発生しました: {e}")
 finally:
-    # UDP通信を安全に閉じる
-    if udp_comm:
+    # 通信を安全に閉じる
+    if COMMUNICATION_MODE == 'WIFI' and udp_comm:
         udp_comm.stop()
+        print("WiFi通信を停止しました")
+    elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
+        serial_comm.stop()
+        print("シリアル通信を停止しました")
+
     if stereo_snd and stereo_snd.status != constants.STOPPED:
         stereo_snd.stop()
     if 'main_log_fh' in locals() and main_log_fh and not main_log_fh.closed:

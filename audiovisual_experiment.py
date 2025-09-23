@@ -82,6 +82,17 @@ class SoundSource:
 # 'both'  : 音量差と時間差の両方
 PANNING_MODE = 'both'
 
+# ★★★ 音響ソースモードを選択 ★★★
+# 'simulation': シミュレーション音（現在の方式）
+# 'mp3': MP3ファイル再生
+AUDIO_SOURCE_MODE = 'mp3'  # 'simulation' または 'mp3'
+
+# MP3ファイル設定（AUDIO_SOURCE_MODE = 'mp3'の場合）
+MP3_FILE_RED = "audio_files/red_sync_audio.wav"    # 赤ドット同期用MP3ファイル
+MP3_FILE_GREEN = "audio_files/green_sync_audio.wav"  # 緑ドット同期用MP3ファイル
+MP3_LOOP = True                                      # MP3をループ再生するかどうか
+# 注意: MP3ファイルを使用する場合は、audio_files/フォルダに両方のMP3ファイルを配置してください
+
 # スクロールモードのON/OFFを設定
 SCROLLING_MODE = True
 VIRTUAL_HEIGHT_MULTIPLIER = 2.0 # スクロールモード時の仮想空間の高さ（画面の何倍か）
@@ -552,8 +563,68 @@ def init_positions():
 
 
 # ------------------------------------------------------------------
-# 4. 2D座標系音響生成（各耳への個別距離減衰）
+# 4. 音響生成システム
 # ------------------------------------------------------------------
+
+def load_mp3_sound(file_path: str, duration: float = None) -> sound.Sound:
+    """
+    MP3ファイルを読み込んで、指定された長さに調整したSound オブジェクトを作成
+    """
+    try:
+        import os
+        
+        # ファイルの存在確認
+        if not os.path.exists(file_path):
+            print(f"MP3ファイルが見つかりません: {file_path}")
+            return None
+            
+        # PsychoPyのsound.Soundを使ってMP3を読み込み
+        mp3_sound = sound.Sound(file_path)
+        
+        # ループ設定
+        if MP3_LOOP:
+            mp3_sound.setLoops(-1)  # -1で無限ループ
+        else:
+            mp3_sound.setLoops(0)   # 1回再生
+            
+        print(f"MP3ファイルを読み込みました: {file_path}")
+        print(f"ループ設定: {'有効' if MP3_LOOP else '無効'}")
+        return mp3_sound
+        
+    except Exception as e:
+        print(f"MP3ファイルの読み込みに失敗しました: {e}")
+        print("可能な原因:")
+        print("- ファイルパスが正しくない")
+        print("- MP3ファイルが破損している")
+        print("- PsychoPyが対応していない形式")
+        return None
+
+def build_audio_source(sync_to_red: bool, mode: str) -> sound.Sound:
+    """
+    選択された音響ソースモードに応じて音声を生成
+    """
+    if AUDIO_SOURCE_MODE == 'mp3':
+        # MP3ファイル再生モード - 赤・緑の同期に応じてファイルを選択
+        if sync_to_red:
+            mp3_file_path = MP3_FILE_RED
+            sync_type = "赤ドット同期"
+        else:
+            mp3_file_path = MP3_FILE_GREEN
+            sync_type = "緑ドット同期"
+            
+        mp3_sound = load_mp3_sound(mp3_file_path, TRIAL_DURATION)
+        if mp3_sound:
+            print(f"MP3モード: {sync_type} - {mp3_file_path} を再生")
+            return mp3_sound
+        else:
+            print("MP3読み込み失敗のため、シミュレーション音響を使用")
+            # フォールバックとしてシミュレーション音響を使用
+            return build_multi_stereo_sound(sync_to_red, mode)
+    else:
+        # シミュレーション音響モード（従来の方式）
+        return build_multi_stereo_sound(sync_to_red, mode)
+
+# 2D座標系音響生成（各耳への個別距離減衰）
 def build_multi_stereo_sound(sync_to_red: bool, mode: str) -> sound.Sound:
     """
     2D座標系で音像と各耳の距離を計算し、個別の距離減衰を適用した
@@ -816,6 +887,7 @@ try:
     main_log_csv = csv.writer(main_log_fh)
     header = [
         'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
+        'audio_source_mode', 'audio_sync_type', 'audio_file_used',
         'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
         'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
         'left_ear_pos', 'right_ear_pos', 'distance_attenuation', 'min_distance_gain',
@@ -876,6 +948,24 @@ if USE_GVS:
 else:
     print("GVS刺激は無効です")
 
+# 音響設定の表示
+print(f"\n音響設定:")
+print(f"- ソースモード: {AUDIO_SOURCE_MODE}")
+if AUDIO_SOURCE_MODE == 'mp3':
+    print(f"- 赤ドット同期MP3: {MP3_FILE_RED}")
+    print(f"- 緑ドット同期MP3: {MP3_FILE_GREEN}")
+    print(f"- ループ再生: {'有効' if MP3_LOOP else '無効'}")
+    import os
+    red_exists = os.path.exists(MP3_FILE_RED)
+    green_exists = os.path.exists(MP3_FILE_GREEN)
+    print(f"- 赤ファイル状態: {'存在確認済み' if red_exists else 'ファイルが見つかりません'}")
+    print(f"- 緑ファイル状態: {'存在確認済み' if green_exists else 'ファイルが見つかりません'}")
+    if not (red_exists and green_exists):
+        print("  → 不足ファイルがある場合、シミュレーション音響にフォールバック")
+else:
+    print(f"- パンニングモード: {PANNING_MODE}")
+print()
+
 experiment_running = True
 trial_idx = 1
 response_mapping = {'r': 'red', 'g': 'green'}
@@ -885,6 +975,15 @@ try:
     while experiment_running:
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
+        
+        # 音響情報の記録用変数
+        sync_red = (cond_type == 'red')
+        audio_sync_type = 'red_sync' if sync_red else 'green_sync'
+        
+        if AUDIO_SOURCE_MODE == 'mp3':
+            audio_file_used = MP3_FILE_RED if sync_red else MP3_FILE_GREEN
+        else:
+            audio_file_used = 'simulation'
 
         # ドット位置と時間の履歴を保存するリスト
         red_dot_positions = []
@@ -897,10 +996,9 @@ try:
         last_t = 0.0
 
         # ----- サウンド準備 -----
-        sync_red = (cond_type == 'red')
         if stereo_snd and stereo_snd.status != constants.STOPPED:
             stereo_snd.stop()
-        stereo_snd = build_multi_stereo_sound(sync_red, PANNING_MODE)
+        stereo_snd = build_audio_source(sync_red, PANNING_MODE)
 
         # ----- 測定開始 -----
         if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
@@ -934,6 +1032,7 @@ try:
                 key_name, rt = keys[0]
                 if key_name == 'escape':
                     experiment_running = False
+                    participant_response = 'escape_quit'  # ESCキーでの終了を明示
                 else:
                     participant_response = response_mapping.get(key_name, 'invalid')
                 break
@@ -989,7 +1088,7 @@ try:
             green_dot_positions.append(green_mean_xy.tolist())
             timestamps.append(now)
 
-#            red_dots.draw()
+            red_dots.draw()
             green_dots.draw()
             win.flip()
 
@@ -1001,6 +1100,19 @@ try:
             print(f"Trial {trial_idx}: GVS刺激停止")
             gvs_controller.stop_stimulation()
             time.sleep(0.05)  # GVS停止の確認
+
+        # メインログに記録（ESCキーが押された場合でも記録）
+        audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
+        log_data = [
+            trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
+            AUDIO_SOURCE_MODE, audio_sync_type, audio_file_used,
+            WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
+            OSC_AMP, audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,
+            f"({LEFT_EAR_X},{LEFT_EAR_Y})", f"({RIGHT_EAR_X},{RIGHT_EAR_Y})",
+            DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN, SAMPLE_RATE, MAX_ITD_S
+        ]
+        main_log_csv.writerow(log_data)
+        main_log_fh.flush()
 
         # ----- 測定停止とデータ取得 -----
         accel_data = []
@@ -1076,20 +1188,9 @@ try:
             # 次の試行のためにバッファをクリア
             serial_comm.get_accel_data()
 
+        # ESCキーが押された場合は実験終了
         if not experiment_running:
             break
-
-        # メインログに記録
-        audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
-        log_data = [
-            trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
-            WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
-            OSC_AMP, audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,
-            f"({LEFT_EAR_X},{LEFT_EAR_Y})", f"({RIGHT_EAR_X},{RIGHT_EAR_Y})",
-            DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN, SAMPLE_RATE, MAX_ITD_S
-        ]
-        main_log_csv.writerow(log_data)
-        main_log_fh.flush()
 
         # ----- ITI -----
         fixation = visual.TextStim(win, text='+', color='white', height=30)
@@ -1129,5 +1230,13 @@ finally:
         print(f"メインログを保存しました: {os.path.abspath(MAIN_LOG_PATH)}")
     if 'win' in locals() and win:
         win.close()
+    
+    # 実験終了理由を表示
+    if not experiment_running:
+        print("実験がESCキーで中断されました。")
+        print(f"完了した試行数: {trial_idx}")
+    else:
+        print("実験が正常に完了しました。")
+    
     core.quit()
     print("実験を終了しました。")

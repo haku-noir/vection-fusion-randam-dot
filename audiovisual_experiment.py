@@ -64,7 +64,7 @@ COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
 # GVS（前庭電気刺激）設定
 USE_GVS = True               # GVS刺激を使用するかどうか
-GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポート（適切なポートに変更）
+GVS_SERIAL_PORT = "/dev/cu.usbserial-6"  # GVS用ESP32のシリアルポート（適切なポートに変更）
 GVS_BAUDRATE = 115200        # GVSのボーレート
 
 # 音源の情報を保持するクラス
@@ -125,7 +125,7 @@ MIN_DISTANCE_GAIN = 0.3     # 最小ゲイン（より高く設定）
 
 # SoundSourceオブジェクトをシンプルに定義
 SOUND_SOURCES = [
-    SoundSource(freqs=[523.25]),  # ド(C5) 
+    SoundSource(freqs=[523.25]),  # ド(C5)
 ]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
@@ -133,6 +133,17 @@ MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モ�
 # 試行
 TRIAL_DURATION   = 180.0      # 各試行の刺激掲示時間 [s]
 ITI              = 1.0       # 刺激間インターバル [s]
+
+# ビープ音設定
+USE_BEEP = False              # ビープ音を使用するかどうか
+BEEP_FREQ = 1000             # ビープ音の周波数 [Hz]
+BEEP_DURATION = 0.2          # ビープ音の長さ [s]
+BEEP_VOLUME = 0.5            # ビープ音の音量 (0.0-1.0)
+BEEP_SEP = 2.0               # ビープ音と刺激の間の長さ [s]
+
+# 中心線設定
+USE_CENTER_LINES = False      # 中心線を表示するかどうか
+CENTER_LINE_WIDTH = 8        # 中心線の太さ [pix]
 
 # ログ
 LOG_DIR = PANNING_MODE
@@ -471,7 +482,7 @@ class GVSController:
         self.baudrate = baudrate
         self.serial_connection = None
         self.connected = False
-        
+
     def connect(self):
         """GVS用ESP32に接続"""
         try:
@@ -485,7 +496,7 @@ class GVSController:
             print(f"GVS Controller connection failed: {e}")
             self.connected = False
             return False
-    
+
     def disconnect(self):
         """GVS用ESP32から切断"""
         if self.serial_connection:
@@ -495,13 +506,13 @@ class GVSController:
                 print("GVS Controller disconnected")
             except Exception as e:
                 print(f"GVS Controller disconnect error: {e}")
-    
+
     def send_command(self, command):
         """GVS用ESP32にコマンドを送信"""
         if not self.connected or not self.serial_connection:
             print("GVS Controller not connected")
             return False
-        
+
         try:
             command_with_newline = command + '\n'
             self.serial_connection.write(command_with_newline.encode('utf-8'))
@@ -510,15 +521,15 @@ class GVSController:
         except Exception as e:
             print(f"GVS command send error: {e}")
             return False
-    
+
     def start_stimulation(self):
         """GVS刺激開始"""
         return self.send_command("START_GVS")
-    
+
     def stop_stimulation(self):
         """GVS刺激停止"""
         return self.send_command("STOP_GVS")
-    
+
     def set_amplitude(self, amplitude):
         """GVS振幅設定（0-255）"""
         if 0 <= amplitude <= 255:
@@ -531,6 +542,15 @@ class GVSController:
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
+
+def create_beep_sound(freq, duration, volume=0.5, sample_rate=44100):
+    """ビープ音を生成（test_random_dotsと同じ方式）"""
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    wave = np.sin(2 * np.pi * freq * t) * volume
+    # ステレオ信号として作成
+    stereo = np.column_stack([wave, wave])
+    return sound.Sound(value=stereo, sampleRate=sample_rate, stereo=True)
+
 win = visual.Window(size=WIN_SIZE, color=[0, 0, 0], units='pix',
                     fullscr=False, allowGUI=True) # フルスクリーンに変更
 
@@ -545,6 +565,32 @@ ORANGE_RGB = [1.0, 0.294, -1.0]
 GREEN_RGB = [-1, 1, -1]
 red_dots   = create_dot_stim(ORANGE_RGB)
 green_dots = create_dot_stim(GREEN_RGB)
+
+# 中心線を作成（オプション）
+if USE_CENTER_LINES:
+    center_line_red = visual.Line(
+        win,
+        start=(0, -win.size[1]//2),
+        end=(0, win.size[1]//2),
+        lineColor=ORANGE_RGB,  # 赤色
+        lineWidth=CENTER_LINE_WIDTH
+    )
+    center_line_green = visual.Line(
+        win,
+        start=(0, -win.size[1]//2),
+        end=(0, win.size[1]//2),
+        lineColor=GREEN_RGB,  # 緑色
+        lineWidth=CENTER_LINE_WIDTH
+    )
+else:
+    center_line_red = None
+    center_line_green = None
+
+# ビープ音を作成（オプション）
+if USE_BEEP:
+    beep_sound = create_beep_sound(BEEP_FREQ, BEEP_DURATION, BEEP_VOLUME)
+else:
+    beep_sound = None
 
 WIN_W, WIN_H = win.size
 Y_MAX = WIN_H / 2
@@ -572,25 +618,25 @@ def load_mp3_sound(file_path: str, duration: float = None) -> sound.Sound:
     """
     try:
         import os
-        
+
         # ファイルの存在確認
         if not os.path.exists(file_path):
             print(f"MP3ファイルが見つかりません: {file_path}")
             return None
-            
+
         # PsychoPyのsound.Soundを使ってMP3を読み込み
         mp3_sound = sound.Sound(file_path)
-        
+
         # ループ設定
         if MP3_LOOP:
             mp3_sound.setLoops(-1)  # -1で無限ループ
         else:
             mp3_sound.setLoops(0)   # 1回再生
-            
+
         print(f"MP3ファイルを読み込みました: {file_path}")
         print(f"ループ設定: {'有効' if MP3_LOOP else '無効'}")
         return mp3_sound
-        
+
     except Exception as e:
         print(f"MP3ファイルの読み込みに失敗しました: {e}")
         print("可能な原因:")
@@ -611,7 +657,7 @@ def build_audio_source(sync_to_red: bool, mode: str) -> sound.Sound:
         else:
             mp3_file_path = MP3_FILE_GREEN
             sync_type = "緑ドット同期"
-            
+
         mp3_sound = load_mp3_sound(mp3_file_path, TRIAL_DURATION)
         if mp3_sound:
             print(f"MP3モード: {sync_type} - {mp3_file_path} を再生")
@@ -975,11 +1021,11 @@ try:
     while experiment_running:
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
-        
+
         # 音響情報の記録用変数
         sync_red = (cond_type == 'red')
         audio_sync_type = 'red_sync' if sync_red else 'green_sync'
-        
+
         if AUDIO_SOURCE_MODE == 'mp3':
             audio_file_used = MP3_FILE_RED if sync_red else MP3_FILE_GREEN
         else:
@@ -1004,12 +1050,18 @@ try:
         if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
             udp_comm.clear_data()
             udp_comm.start_measurement()
-            time.sleep(0.05)  # 測定開始の確認を短縮
+            time.sleep(0.05)  # 測定開始の確認
         elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
             # シリアル通信の場合は測定開始コマンドを送信
             print(f"Trial {trial_idx}: シリアル測定開始コマンドを送信")
             serial_comm.start_measurement()
-            time.sleep(0.1)  # 測定開始の確認
+            time.sleep(0.05)  # 測定開始の確認
+
+        # ----- ビープ音再生（試行開始） -----
+        if USE_BEEP and beep_sound:
+            beep_sound.play()
+            print(f"Trial {trial_idx}: ビープ音再生（試行開始）")
+            time.sleep(BEEP_SEP)  # 区切り音の間隔
 
         # ----- GVS刺激開始 -----
         if USE_GVS and gvs_controller:
@@ -1090,6 +1142,25 @@ try:
 
             red_dots.draw()
             green_dots.draw()
+
+            # 中心線を描画（オプション）
+            if USE_CENTER_LINES:
+                # 中心線の位置をオシレーションに合わせて更新
+                phase = 2 * np.pi * OSC_FREQ * now
+                x_osc_offset = OSC_AMP * np.sin(phase)
+                red_center_x = x_osc_offset
+                green_center_x = -x_osc_offset
+
+                if center_line_red:
+                    center_line_red.start = (red_center_x, -WIN_H//2)
+                    center_line_red.end = (red_center_x, WIN_H//2)
+                    center_line_red.draw()
+
+                if center_line_green:
+                    center_line_green.start = (green_center_x, -WIN_H//2)
+                    center_line_green.end = (green_center_x, WIN_H//2)
+                    center_line_green.draw()
+
             win.flip()
 
         if stereo_snd and stereo_snd.status != constants.STOPPED:
@@ -1100,6 +1171,12 @@ try:
             print(f"Trial {trial_idx}: GVS刺激停止")
             gvs_controller.stop_stimulation()
             time.sleep(0.05)  # GVS停止の確認
+
+        # ----- ビープ音再生（試行終了） -----
+        if USE_BEEP and beep_sound:
+            time.sleep(BEEP_SEP)  # 区切り音の間隔
+            beep_sound.play()
+            print(f"Trial {trial_idx}: ビープ音再生（試行終了）")
 
         # メインログに記録（ESCキーが押された場合でも記録）
         audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
@@ -1120,7 +1197,7 @@ try:
         if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
             # WiFi通信の場合
             udp_comm.stop_measurement()
-            time.sleep(0.05)  # 測定停止の確認を短縮
+            time.sleep(0.05)  # 測定停止の確認
 
             # データ要求とデータ受信
             print("Requesting acceleration data from M5Stack...")
@@ -1216,7 +1293,7 @@ finally:
     elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
         serial_comm.stop()
         print("シリアル通信を停止しました")
-    
+
     # GVS制御を安全に停止
     if USE_GVS and gvs_controller:
         gvs_controller.stop_stimulation()
@@ -1230,13 +1307,13 @@ finally:
         print(f"メインログを保存しました: {os.path.abspath(MAIN_LOG_PATH)}")
     if 'win' in locals() and win:
         win.close()
-    
+
     # 実験終了理由を表示
     if not experiment_running:
         print("実験がESCキーで中断されました。")
         print(f"完了した試行数: {trial_idx}")
     else:
         print("実験が正常に完了しました。")
-    
+
     core.quit()
     print("実験を終了しました。")

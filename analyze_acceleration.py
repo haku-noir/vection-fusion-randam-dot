@@ -11,6 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import sys
+import glob
+import re
 from scipy.signal import butter, lfilter
 
 # --- 設定 ---
@@ -372,18 +374,50 @@ def save_correlation_to_csv(df_corr, output_file):
     else:
         print(f"相関データが空のため保存をスキップしました: {output_file}")
 
-def main():
-    """メイン処理"""
-    csv_file = sys.argv[1] if len(sys.argv) > 1 else None
-    if not os.path.exists(csv_file):
-        print(f"ファイルが見つかりません: {csv_file}")
-        return
+def find_target_csv_files(input_path):
+    """
+    指定されたパスからYYYYMMDD_HHMMSS_accel_log_serial_trial_1.csvファイルを再帰的に検索
+
+    Args:
+        input_path (str): ファイルまたはフォルダのパス
+
+    Returns:
+        list: 対象CSVファイルのパスリスト
+    """
+    target_files = []
+
+    if os.path.isfile(input_path):
+        # 単一ファイルが指定された場合
+        if input_path.endswith('.csv'):
+            target_files.append(input_path)
+    elif os.path.isdir(input_path):
+        # フォルダが指定された場合、再帰的に検索
+        pattern = re.compile(r'\d{8}_\d{6}_accel_log_serial_trial_1\.csv$')
+
+        for root, dirs, files in os.walk(input_path):
+            for file in files:
+                if pattern.match(file):
+                    target_files.append(os.path.join(root, file))
+
+    return sorted(target_files)
+
+def process_single_file(csv_file):
+    """
+    単一CSVファイルの処理
+
+    Args:
+        csv_file (str): 処理するCSVファイルのパス
+    """
+    print(f"\n{'='*60}")
     print(f"解析対象ファイル: {csv_file}")
+    print(f"{'='*60}")
 
     # --- フィルタなしで解析 ---
     print("\n--- フィルタなし (生データ) で解析 ---")
     df_raw = calculate_acceleration_magnitude(csv_file, use_filter=False)
-    if df_raw is None: return
+    if df_raw is None: 
+        print(f"エラー: {csv_file} の処理をスキップします")
+        return
 
     df_raw_with_angles, gravity_vector_raw = calculate_gravity_and_angles(df_raw)
     df_corr_raw = calculate_windowed_correlation(df_raw_with_angles) # 相関を計算
@@ -399,7 +433,7 @@ def main():
     save_angle_data_to_csv(df_raw_with_angles, output_angles_raw_csv)
     save_correlation_to_csv(df_corr_raw, output_corr_raw_csv)
 
-    print("\nフィルタなしのグラフを表示します...")
+    print("フィルタなしのグラフを作成します...")
     plot_angle_analysis(
         df_raw_with_angles[df_raw_with_angles["psychopy_time"] >= START_TIME],
         gravity_vector_raw,
@@ -412,7 +446,9 @@ def main():
     # --- フィルタありで解析 ---
     print("\n--- ローパスフィルタありで解析 ---")
     df_filtered = calculate_acceleration_magnitude(csv_file, use_filter=True)
-    if df_filtered is None: return
+    if df_filtered is None: 
+        print(f"エラー: {csv_file} のフィルタ処理をスキップします")
+        return
 
     df_filtered_with_angles, gravity_vector_filtered = calculate_gravity_and_angles(df_filtered)
     df_corr_filtered = calculate_windowed_correlation(df_filtered_with_angles) # 相関を計算
@@ -428,7 +464,7 @@ def main():
     save_angle_data_to_csv(df_filtered_with_angles, output_angles_filtered_csv)
     save_correlation_to_csv(df_corr_filtered, output_corr_filtered_csv)
 
-    print("\nフィルタありのグラフを表示します...")
+    print("フィルタありのグラフを作成します...")
     plot_angle_analysis(
         df_filtered_with_angles[df_filtered_with_angles["psychopy_time"] >= START_TIME],
         gravity_vector_filtered,
@@ -437,6 +473,50 @@ def main():
         split_plots=SPLIT_PLOTS_BY_TIME,
         segment_duration=SPLIT_DURATION
     )
+
+    print(f"{csv_file} の処理が完了しました。")
+
+def main():
+    """メイン処理"""
+    if len(sys.argv) < 2:
+        print("使用方法:")
+        print("  python analyze_acceleration.py <CSVファイルのパス>")
+        print("  python analyze_acceleration.py <フォルダのパス>")
+        print("")
+        print("例:")
+        print("  python analyze_acceleration.py both/20250924_131546_accel_log_serial_trial_1.csv")
+        print("  python analyze_acceleration.py both/")
+        return
+
+    input_path = sys.argv[1]
+
+    if not os.path.exists(input_path):
+        print(f"ファイルまたはフォルダが見つかりません: {input_path}")
+        return
+
+    # 対象ファイルを検索
+    target_files = find_target_csv_files(input_path)
+
+    if not target_files:
+        print(f"対象ファイル (YYYYMMDD_HHMMSS_accel_log_serial_trial_1.csv) が見つかりません: {input_path}")
+        return
+
+    print(f"見つかった対象ファイル数: {len(target_files)}")
+    for i, file in enumerate(target_files, 1):
+        print(f"  {i:2d}. {file}")
+
+    # 各ファイルを処理
+    for i, csv_file in enumerate(target_files, 1):
+        try:
+            print(f"\n[{i}/{len(target_files)}] 処理中...")
+            process_single_file(csv_file)
+        except Exception as e:
+            print(f"エラーが発生しました ({csv_file}): {e}")
+            continue
+
+    print(f"\n{'='*60}")
+    print(f"全ての処理が完了しました。処理ファイル数: {len(target_files)}")
+    print(f"{'='*60}")
 
 if __name__ == "__main__":
     main()

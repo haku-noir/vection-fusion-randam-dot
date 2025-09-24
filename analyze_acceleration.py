@@ -16,13 +16,16 @@ from scipy.signal import butter, lfilter
 # --- 設定 ---
 # グラフを180秒ごとに分割して出力するかどうか
 SPLIT_PLOTS_BY_TIME = True
-SPLIT_DURATION = 180  # 分割する時間（秒）
-START_TIME = 10 # 解析開始時間(s)
+SPLIT_DURATION = 200  # 分割する時間（秒）
+START_TIME = 0 # 解析開始時間(s)
 FILTER_CUTOFF_HZ = 2 # ローパスフィルタのカットオフ周波数 (Hz)
 
 # --- 相関解析の設定 ---
 CORR_WINDOW_SIZE_SEC = 10  # 相関解析の窓のサイズ（秒）
 CORR_STEP_SIZE_SEC = 1     # 相関解析の窓をずらすステップサイズ（秒）
+
+# --- ファイル出力の設定 ---
+SKIP_EXISTING_FILE = True   # 既存のファイルがある場合はスキップするかどうか
 
 
 def apply_lowpass_filter(df, cutoff=5, fs=120, order=4):
@@ -226,6 +229,10 @@ def plot_angle_analysis(df, gravity_vector, df_corr=None, output_file=None, spli
                 df_corr_segment = df_corr[(df_corr['time'] >= t_start) & (df_corr['time'] < t_end)]
 
             segment_output_file = f"{base_name}_{int(t_start)}-{int(t_end)}s{ext}"
+            # 既存ファイルのチェック
+            if SKIP_EXISTING_FILE and os.path.exists(segment_output_file):
+                print(f"既存ファイルをスキップしました: {segment_output_file}")
+                return
             print(f"  - {int(t_start)}s から {int(t_end)}s の区間をプロット中...")
             _plot_single_chart(df_segment, gravity_vector, df_corr_segment, segment_output_file, show_plot=False)
         print("分割プロットの作成が完了しました。")
@@ -320,10 +327,54 @@ def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
         plt.show()
     plt.close()
 
+def save_angle_data_to_csv(df, output_file):
+    """
+    角度データをCSVファイルに保存
+
+    Args:
+        df (pd.DataFrame): 角度データを含むデータフレーム
+        output_file (str): 出力CSVファイルのパス
+    """
+    # 既存ファイルのチェック
+    if SKIP_EXISTING_FILE and os.path.exists(output_file):
+        print(f"既存ファイルをスキップしました: {output_file}")
+        return
+
+    # 必要な列のみを選択
+    columns_to_save = [
+        'psychopy_time', 'accel_x', 'accel_y', 'accel_z', 'angle_change'
+    ]
+
+    # 存在する列のみを選択
+    available_columns = [col for col in columns_to_save if col in df.columns]
+    df_to_save = df[available_columns].copy()
+
+    # CSVファイルに保存
+    df_to_save.to_csv(output_file, index=False)
+    print(f"角度データを保存しました: {output_file}")
+
+def save_correlation_to_csv(df_corr, output_file):
+    """
+    相関データをCSVファイルに保存
+
+    Args:
+        df_corr (pd.DataFrame): 相関データを含むデータフレーム
+        output_file (str): 出力CSVファイルのパス
+    """
+    # 既存ファイルのチェック
+    if SKIP_EXISTING_FILE and os.path.exists(output_file):
+        print(f"既存ファイルをスキップしました: {output_file}")
+        return
+
+    if df_corr is not None and not df_corr.empty:
+        df_corr.to_csv(output_file, index=False)
+        print(f"相関データを保存しました: {output_file}")
+    else:
+        print(f"相関データが空のため保存をスキップしました: {output_file}")
+
 def main():
     """メイン処理"""
-    default_csv = "both/20250829_154715_accel_log_trial_2.csv"
-    csv_file = sys.argv[1] if len(sys.argv) > 1 else default_csv
+    csv_file = sys.argv[1] if len(sys.argv) > 1 else None
     if not os.path.exists(csv_file):
         print(f"ファイルが見つかりません: {csv_file}")
         return
@@ -339,6 +390,14 @@ def main():
 
     base_name_raw = os.path.splitext(os.path.basename(csv_file))[0]
     output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.png")
+
+    # CSV出力ファイル名を生成
+    output_angles_raw_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angles_raw.csv")
+    output_corr_raw_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_correlation_raw_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.csv")
+
+    # CSVファイルに保存
+    save_angle_data_to_csv(df_raw_with_angles, output_angles_raw_csv)
+    save_correlation_to_csv(df_corr_raw, output_corr_raw_csv)
 
     print("\nフィルタなしのグラフを表示します...")
     plot_angle_analysis(
@@ -360,6 +419,14 @@ def main():
 
     base_name_filtered = os.path.splitext(os.path.basename(csv_file))[0]
     output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered_{FILTER_CUTOFF_HZ}Hz_window{CORR_WINDOW_SIZE_SEC}s.png")
+
+    # CSV出力ファイル名を生成
+    output_angles_filtered_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angles_filtered_{FILTER_CUTOFF_HZ}Hz.csv")
+    output_corr_filtered_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_correlation_filtered_{FILTER_CUTOFF_HZ}Hz_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.csv")
+
+    # CSVファイルに保存
+    save_angle_data_to_csv(df_filtered_with_angles, output_angles_filtered_csv)
+    save_correlation_to_csv(df_corr_filtered, output_corr_filtered_csv)
 
     print("\nフィルタありのグラフを表示します...")
     plot_angle_analysis(

@@ -64,7 +64,7 @@ COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
 # GVS（前庭電気刺激）設定
 USE_GVS = True               # GVS刺激を使用するかどうか
-GVS_SERIAL_PORT = "/dev/cu.usbserial-6"  # GVS用ESP32のシリアルポート（適切なポートに変更）
+GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポート（適切なポートに変更）
 GVS_BAUDRATE = 115200        # GVSのボーレート
 
 # 音源の情報を保持するクラス
@@ -88,8 +88,8 @@ PANNING_MODE = 'both'
 AUDIO_SOURCE_MODE = 'mp3'  # 'simulation' または 'mp3'
 
 # MP3ファイル設定（AUDIO_SOURCE_MODE = 'mp3'の場合）
-MP3_FILE_RED = "audio_files/red_sync_audio.wav"    # 赤ドット同期用MP3ファイル
-MP3_FILE_GREEN = "audio_files/green_sync_audio.wav"  # 緑ドット同期用MP3ファイル
+MP3_FILE_RED = "audio_files/red.wav"    # 赤ドット同期用MP3ファイル
+MP3_FILE_GREEN = "audio_files/green.wav"  # 緑ドット同期用MP3ファイル
 MP3_LOOP = True                                      # MP3をループ再生するかどうか
 # 注意: MP3ファイルを使用する場合は、audio_files/フォルダに両方のMP3ファイルを配置してください
 
@@ -522,9 +522,15 @@ class GVSController:
             print(f"GVS command send error: {e}")
             return False
 
-    def start_stimulation(self):
-        """GVS刺激開始"""
-        return self.send_command("START_GVS")
+    def start_stimulation(self, color_sync='red'):
+        """GVS刺激開始 - 色に応じて同相/逆相を指定"""
+        if color_sync == 'red':
+            return self.send_command("START_GVS_RED")  # 赤=同相
+        elif color_sync == 'green':
+            return self.send_command("START_GVS_GREEN")  # 緑=逆相
+        else:
+            # デフォルトは赤（同相）
+            return self.send_command("START_GVS_RED")
 
     def stop_stimulation(self):
         """GVS刺激停止"""
@@ -1065,8 +1071,8 @@ try:
 
         # ----- GVS刺激開始 -----
         if USE_GVS and gvs_controller:
-            print(f"Trial {trial_idx}: GVS刺激開始")
-            gvs_controller.start_stimulation()
+            print(f"Trial {trial_idx}: GVS刺激開始 ({cond_type})")
+            gvs_controller.start_stimulation(cond_type)  # 赤なら同相、緑なら逆相
             time.sleep(0.05)  # GVS開始の確認
 
         # ----- 刺激提示 & 応答取得 -----

@@ -13,6 +13,9 @@ const int duration = 180;     // seconds (audiovisual_experimentに合わせて1
 // amplitudeScaled: 0..255 used for dacWrite
 volatile uint8_t amplitudeScaled = 127; // default: full scale (0-255)
 
+// phase control for red/green sync
+volatile bool phaseInvert = false;  // false: red (in-phase), true: green (anti-phase)
+
 // Potentiometer settings (optional)
 const bool USE_POT = false;    // true にするとポテンショで振幅制御
 const int potPin = 34;         // ADC1_CH6 (GPIO34) - 入力専用ピン（例）
@@ -31,7 +34,9 @@ void setup() {
   dacWrite(dacPin26, 0);
 
   Serial.println("Ready. Commands:");
-  Serial.println(" START_GVS = start GVS stimulation");
+  Serial.println(" START_GVS_RED = start GVS stimulation (red sync - in-phase)");
+  Serial.println(" START_GVS_GREEN = start GVS stimulation (green sync - anti-phase)");
+  Serial.println(" START_GVS = start GVS stimulation (default: red sync)");
   Serial.println(" STOP_GVS = stop GVS stimulation");
   Serial.println(" V<0-255> = set amplitude (e.g. V128)");
   Serial.print(" Use potentiometer: "); Serial.println(USE_POT ? "ENABLED" : "disabled");
@@ -58,11 +63,31 @@ void loop() {
     if (c == '\r' || c == '\n') {
       if (serialBuf.length() > 0) {
         // process command
-        if (serialBuf == "START_GVS") {
+        if (serialBuf == "START_GVS_RED") {
           if (!active) {
             active = true;
+            phaseInvert = false;  // 赤 = 同相
             startMillis = millis();
-            Serial.println(">>> GVS START (180s) <<<");
+            Serial.println(">>> GVS START RED (180s, in-phase) <<<");
+          } else {
+            Serial.println("GVS already active.");
+          }
+        } else if (serialBuf == "START_GVS_GREEN") {
+          if (!active) {
+            active = true;
+            phaseInvert = true;   // 緑 = 逆相
+            startMillis = millis();
+            Serial.println(">>> GVS START GREEN (180s, anti-phase) <<<");
+          } else {
+            Serial.println("GVS already active.");
+          }
+        } else if (serialBuf == "START_GVS") {
+          // デフォルトは赤（同相）
+          if (!active) {
+            active = true;
+            phaseInvert = false;  // デフォルト = 同相
+            startMillis = millis();
+            Serial.println(">>> GVS START (180s, default: in-phase) <<<");
           } else {
             Serial.println("GVS already active.");
           }
@@ -122,6 +147,11 @@ void loop() {
 
     float t = elapsed / 1000.0;
     float sineValue = sin(2.0 * PI * sineFreq * t); // -1..1
+
+    // 位相制御: 緑（逆相）の場合は位相を反転
+    if (phaseInvert) {
+      sineValue = -sineValue;
+    }
 
     // scale by amplitudeScaled (0..255)
     int outVal = (int)(fabs(sineValue) * (float)amplitudeScaled + 0.5);

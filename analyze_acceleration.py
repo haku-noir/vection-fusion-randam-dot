@@ -1,8 +1,9 @@
-#!/usr/bin/env# --- 設定 ---
+#!/usr/bin/env
 # -*- coding: utf-8 -*-
 """
 加速度データの解析プログラム
-CSVファイルから加速度データを読み込み、加速度ベクトルの大きさを時間軸でプロット
+CSVファイルから加速度データを読み込み、角度変化を計算し、
+視覚刺激との時間窓相関解析を行ってプロットする
 """
 
 import pandas as pd
@@ -13,11 +14,15 @@ import sys
 from scipy.signal import butter, lfilter
 
 # --- 設定 ---
-# グラフを60秒ごとに分割して出力するかどうか
+# グラフを180秒ごとに分割して出力するかどうか
 SPLIT_PLOTS_BY_TIME = True
 SPLIT_DURATION = 180  # 分割する時間（秒）
 START_TIME = 10 # 解析開始時間(s)
-FILTER_CUTOFF_HZ = 1 # ローパスフィルタのカットオフ周波数 (Hz)
+FILTER_CUTOFF_HZ = 2 # ローパスフィルタのカットオフ周波数 (Hz)
+
+# --- 相関解析の設定 ---
+CORR_WINDOW_SIZE_SEC = 10  # 相関解析の窓のサイズ（秒）
+CORR_STEP_SIZE_SEC = 1     # 相関解析の窓をずらすステップサイズ（秒）
 
 
 def apply_lowpass_filter(df, cutoff=5, fs=120, order=4):
@@ -56,30 +61,21 @@ def calculate_acceleration_magnitude(csv_file_path, use_filter=False):
         pd.DataFrame: 時間と加速度ベクトルの大きさを含むデータフレーム
     """
     try:
-        # CSVファイルを読み込み
         df = pd.read_csv(csv_file_path)
         print(f"データを読み込みました: {len(df)} 行")
 
-        # 必要な列が存在するかチェック
         required_columns = ['psychopy_time', 'accel_x', 'accel_y', 'accel_z']
         for col in required_columns:
             if col not in df.columns:
                 raise ValueError(f"必要な列 '{col}' が見つかりません")
 
-        # ローパスフィルタを適用（オプション）
         if use_filter:
             print(f"ローパスフィルタ（{FILTER_CUTOFF_HZ}Hz）を適用します...")
             df = apply_lowpass_filter(df, cutoff=FILTER_CUTOFF_HZ)
 
-        # 加速度ベクトルの大きさを計算 (√(x² + y² + z²))
-        df['accel_magnitude'] = np.sqrt(
-            df['accel_x']**2 + df['accel_y']**2 + df['accel_z']**2
-        )
+        df['accel_magnitude'] = np.sqrt(df['accel_x']**2 + df['accel_y']**2 + df['accel_z']**2)
 
-        # 視覚刺激データも含めて返す（存在する場合）
         output_columns = ['psychopy_time', 'accel_x', 'accel_y', 'accel_z', 'accel_magnitude']
-
-        # 視覚刺激のデータがある場合は追加
         visual_columns = ['red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y']
         for col in visual_columns:
             if col in df.columns:
@@ -101,7 +97,6 @@ def calculate_gravity_and_angles(df):
     Returns:
         pd.DataFrame: 角度情報を追加したデータフレーム
     """
-    # 全ての時間での加速度ベクトルの平均を重力加速度として推定
     gravity_x = df['accel_x'].mean()
     gravity_y = df['accel_y'].mean()
     gravity_z = df['accel_z'].mean()
@@ -114,61 +109,33 @@ def calculate_gravity_and_angles(df):
     print(f"平均Z: {gravity_z:.3f} m/s²")
     print(f"平均の大きさ: {gravity_magnitude:.3f} m/s²")
 
-    # 各時刻での加速度ベクトルと重力ベクトルの角度を計算
-    angles = []
-    angle_changes = []
-
-    # 初期の加速度ベクトル（基準）
-    if len(df) > 0:
-        initial_vector = np.array([df.iloc[0]['accel_x'], df.iloc[0]['accel_y'], df.iloc[0]['accel_z']])
-        initial_magnitude = np.linalg.norm(initial_vector)
-    else:
-        initial_vector = gravity_vector
-        initial_magnitude = gravity_magnitude
+    angles, angle_changes = [], []
+    initial_vector = np.array([df.iloc[0]['accel_x'], df.iloc[0]['accel_y'], df.iloc[0]['accel_z']]) if len(df) > 0 else gravity_vector
+    initial_magnitude = np.linalg.norm(initial_vector)
 
     for idx, row in df.iterrows():
-        # 現在の加速度ベクトル
         current_vector = np.array([row['accel_x'], row['accel_y'], row['accel_z']])
         current_magnitude = np.linalg.norm(current_vector)
 
-        # 重力ベクトルとの角度を計算
-        dot_product_gravity = np.dot(current_vector, gravity_vector)
         if current_magnitude > 0 and gravity_magnitude > 0:
-            cos_angle_gravity = dot_product_gravity / (current_magnitude * gravity_magnitude)
-            cos_angle_gravity = np.clip(cos_angle_gravity, -1.0, 1.0)
-            angle_rad_gravity = np.arccos(cos_angle_gravity)
-            angle_deg_gravity = np.degrees(angle_rad_gravity)
+            cos_angle_gravity = np.clip(np.dot(current_vector, gravity_vector) / (current_magnitude * gravity_magnitude), -1.0, 1.0)
+            angles.append(np.degrees(np.arccos(cos_angle_gravity)))
         else:
-            angle_deg_gravity = 0.0
+            angles.append(0.0)
 
-        # 初期ベクトルからの角度変化を計算（符号付き）
-        dot_product_initial = np.dot(current_vector, initial_vector)
         if current_magnitude > 0 and initial_magnitude > 0:
-            cos_angle_initial = dot_product_initial / (current_magnitude * initial_magnitude)
-            cos_angle_initial = np.clip(cos_angle_initial, -1.0, 1.0)
-            angle_rad_initial = np.arccos(cos_angle_initial)
-            angle_deg_initial = np.degrees(angle_rad_initial)
-
-            # 外積を使って回転方向を判定（簡易的な符号付き角度）
+            cos_angle_initial = np.clip(np.dot(current_vector, initial_vector) / (current_magnitude * initial_magnitude), -1.0, 1.0)
+            angle_deg_initial = np.degrees(np.arccos(cos_angle_initial))
             cross_product = np.cross(initial_vector, current_vector)
-            # Z成分の符号で回転方向を判定
-            if len(cross_product) == 3:
-                sign = np.sign(cross_product[2]) if abs(cross_product[2]) > 1e-10 else 1
-            else:
-                sign = 1
-            angle_change = sign * angle_deg_initial
+            sign = np.sign(cross_product[2]) if len(cross_product) == 3 and abs(cross_product[2]) > 1e-10 else 1
+            angle_changes.append(sign * angle_deg_initial)
         else:
-            angle_change = 0.0
+            angle_changes.append(0.0)
 
-        angles.append(angle_deg_gravity)
-        angle_changes.append(angle_change)
-
-    # 角度情報をデータフレームに追加
     df_with_angles = df.copy()
     df_with_angles['angle_to_gravity'] = angles
     df_with_angles['angle_change'] = angle_changes
 
-    # 視覚刺激のx座標の初期値からの変化量を計算（データが存在する場合）
     if 'red_dot_mean_x' in df.columns and 'green_dot_mean_x' in df.columns:
         red_initial = df['red_dot_mean_x'].iloc[0] if len(df) > 0 else 0
         green_initial = df['green_dot_mean_x'].iloc[0] if len(df) > 0 else 0
@@ -177,186 +144,208 @@ def calculate_gravity_and_angles(df):
 
     return df_with_angles, gravity_vector
 
-
-def plot_angle_analysis(df, gravity_vector, output_file=None, split_plots=False, segment_duration=60):
+def calculate_windowed_correlation(df):
     """
-    角度解析のグラフをプロット
+    時間窓相関解析を実行する
+
+    Args:
+        df (pd.DataFrame): 角度変化と視覚刺激データを含むデータフレーム
+
+    Returns:
+        pd.DataFrame: 時間ごとの相関係数を含むデータフレーム
+    """
+    print("時間窓相関解析を実行します...")
+    if 'angle_change' not in df.columns or 'red_dot_x_change' not in df.columns:
+        print("相関解析に必要な列が見つかりません。スキップします。")
+        return pd.DataFrame()
+
+    time_diffs = np.diff(df['psychopy_time'])
+    sampling_rate = 1.0 / np.median(time_diffs)
+
+    window_samples = int(CORR_WINDOW_SIZE_SEC * sampling_rate)
+    step_samples = int(CORR_STEP_SIZE_SEC * sampling_rate)
+
+    results = []
+    start_index = 0
+    while start_index + window_samples <= len(df):
+        end_index = start_index + window_samples
+
+        window_time = df['psychopy_time'].iloc[start_index:end_index].mean()
+
+        # 窓内のデータを抽出
+        angle_window = df['angle_change'].iloc[start_index:end_index]
+        red_window = df['red_dot_x_change'].iloc[start_index:end_index]
+        green_window = df['green_dot_x_change'].iloc[start_index:end_index]
+
+        # トレンド除去
+        angle_detrended = angle_window - angle_window.mean()
+        red_detrended = red_window - red_window.mean()
+        green_detrended = green_window - green_window.mean()
+
+        # 相関係数を計算
+        corr_red = angle_detrended.corr(red_detrended)
+        corr_green = angle_detrended.corr(green_detrended)
+
+        results.append({'time': window_time, 'corr_red': corr_red, 'corr_green': corr_green})
+        start_index += step_samples
+
+    return pd.DataFrame(results)
+
+
+def plot_angle_analysis(df, gravity_vector, df_corr=None, output_file=None, split_plots=False, segment_duration=60):
+    """
+    角度解析と相関解析のグラフをプロット
 
     Args:
         df (pd.DataFrame): 角度データを含むデータフレーム
         gravity_vector (np.array): 重力ベクトル
+        df_corr (pd.DataFrame, optional): 相関データを含むデータフレーム. Defaults to None.
         output_file (str): 保存するファイル名（Noneの場合は表示のみ）
         split_plots (bool): Trueの場合、segment_durationごとにグラフを分割して保存
         segment_duration (int): 分割する場合の時間（秒）
     """
     if not split_plots:
-        # 従来通り、全範囲を1枚のプロットで表示・保存
-        _plot_single_chart(df, gravity_vector, output_file, show_plot=True)
+        _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
     else:
-        # グラフを分割して保存
         if df.empty:
             print("データが空のため、分割プロットは作成されません。")
             return
 
-        t_min = df['psychopy_time'].min()
-        t_max = df['psychopy_time'].max()
+        t_min, t_max = df['psychopy_time'].min(), df['psychopy_time'].max()
         print(f"データを{segment_duration}秒ごとに分割してプロットを作成します... (範囲: {t_min:.2f}s - {t_max:.2f}s)")
-
         base_name, ext = os.path.splitext(output_file)
 
         for t_start in np.arange(t_min, t_max, segment_duration):
             t_end = t_start + segment_duration
             df_segment = df[(df['psychopy_time'] >= t_start) & (df['psychopy_time'] < t_end)]
 
-            if df_segment.empty:
-                continue
+            if df_segment.empty: continue
 
-            # セグメントごとの出力ファイル名を作成
+            df_corr_segment = None
+            if df_corr is not None and not df_corr.empty:
+                df_corr_segment = df_corr[(df_corr['time'] >= t_start) & (df_corr['time'] < t_end)]
+
             segment_output_file = f"{base_name}_{int(t_start)}-{int(t_end)}s{ext}"
-
             print(f"  - {int(t_start)}s から {int(t_end)}s の区間をプロット中...")
-            # 各セグメントのグラフを作成・保存（表示はしない）
-            _plot_single_chart(df_segment, gravity_vector, segment_output_file, show_plot=False)
+            _plot_single_chart(df_segment, gravity_vector, df_corr_segment, segment_output_file, show_plot=False)
         print("分割プロットの作成が完了しました。")
 
 
-def _plot_single_chart(df, gravity_vector, output_file, show_plot=True):
+def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True):
     """
-    単一のグラフを作成・保存・表示する内部関数
+    単一のグラフ（4つのサブプロット）を作成・保存・表示する内部関数
     """
     if df.empty:
         print("プロットするデータがありません。")
         return
 
-    plt.figure(figsize=(15, 12))
-
-    # 日本語フォントの設定（macOS用）
+    plt.figure(figsize=(15, 16)) # グラフの高さを変更
     plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
 
-    # サブプロット1: 加速度の各成分と平均の比較
-    plt.subplot(3, 1, 1)
+    # --- サブプロット1: 加速度の各成分 ---
+    plt.subplot(4, 1, 1)
     plt.plot(df['psychopy_time'], df['accel_x'], label='X軸加速度', alpha=0.7)
     plt.plot(df['psychopy_time'], df['accel_y'], label='Y軸加速度', alpha=0.7)
     plt.plot(df['psychopy_time'], df['accel_z'], label='Z軸加速度', alpha=0.7)
     plt.axhline(y=gravity_vector[0], color='red', linestyle='--', alpha=0.8, label=f'平均X: {gravity_vector[0]:.2f}')
     plt.axhline(y=gravity_vector[1], color='green', linestyle='--', alpha=0.8, label=f'平均Y: {gravity_vector[1]:.2f}')
     plt.axhline(y=gravity_vector[2], color='blue', linestyle='--', alpha=0.8, label=f'平均Z: {gravity_vector[2]:.2f}')
-    plt.xlabel('時間 (秒)')
-    plt.ylabel('加速度 (m/s²)')
     plt.title(f'各軸の加速度変化と推定平均加速度 ({df["psychopy_time"].min():.1f}s - {df["psychopy_time"].max():.1f}s)')
+    plt.ylabel('加速度 (m/s²)')
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # サブプロット2: 加速度ベクトルの大きさ
-    plt.subplot(3, 1, 2)
-    plt.plot(df['psychopy_time'], df['accel_magnitude'],
-             color='purple', linewidth=1.5, label='加速度ベクトルの大きさ')
+    # --- サブプロット2: 加速度ベクトルの大きさ ---
+    plt.subplot(4, 1, 2)
+    plt.plot(df['psychopy_time'], df['accel_magnitude'], color='purple', linewidth=1.5, label='加速度ベクトルの大きさ')
     gravity_magnitude = np.linalg.norm(gravity_vector)
-    plt.axhline(y=gravity_magnitude, color='red', linestyle='--', alpha=0.8,
-                label=f'平均の大きさ: {gravity_magnitude:.2f}')
-    plt.xlabel('時間 (秒)')
+    plt.axhline(y=gravity_magnitude, color='red', linestyle='--', alpha=0.8, label=f'平均の大きさ: {gravity_magnitude:.2f}')
     plt.ylabel('加速度の大きさ (m/s²)')
     plt.ylim(9.5, 10.2)
     plt.title('加速度ベクトルの大きさと平均の大きさ')
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # サブプロット3: 角度変化 + 視覚刺激のx座標平均
-    plt.subplot(3, 1, 3)
-
-    # 主軸: 角度変化
+    # --- サブプロット3: 角度変化 + 視覚刺激 ---
+    plt.subplot(4, 1, 3)
     ax1 = plt.gca()
-    line1 = ax1.plot(df['psychopy_time'], df['angle_change'],
-                     color='orange', linewidth=1.5, label='初期位置からの角度変化')
+    line1 = ax1.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=1.5, label='初期位置からの角度変化')
     ax1.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-    ax1.set_xlabel('時間 (秒)')
     ax1.set_ylabel('角度変化 (度)', color='orange')
-    ax1.set_ylim(-10,  10)  # y軸の範囲を-5度から+5度に固定
+    ax1.set_ylim(-10, 10)
     ax1.tick_params(axis='y', labelcolor='orange')
     ax1.grid(True, alpha=0.3)
 
-    # 副軸: 視覚刺激のx座標変化量（データが存在する場合）
     if 'red_dot_x_change' in df.columns and 'green_dot_x_change' in df.columns:
         ax2 = ax1.twinx()
-        line2 = ax2.plot(df['psychopy_time'], df['red_dot_x_change'],
-                         color='red', alpha=0.7, linewidth=1.0, label='赤点X座標変化')
-        line3 = ax2.plot(df['psychopy_time'], df['green_dot_x_change'],
-                         color='green', alpha=0.7, linewidth=1.0, label='緑点X座標変化')
-        ax2.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-        ax2.set_ylabel('X座標変化 (pixel)', color='black')
-        ax2.set_ylim(-500, 500)  # y軸の範囲を-500から+500に固定
-        ax2.tick_params(axis='y', labelcolor='black')
-
-        # 凡例を結合
+        line2 = ax2.plot(df['psychopy_time'], df['red_dot_x_change'], color='red', alpha=0.7, linewidth=1.0, label='赤点X座標変化')
+        line3 = ax2.plot(df['psychopy_time'], df['green_dot_x_change'], color='green', alpha=0.7, linewidth=1.0, label='緑点X座標変化')
+        ax2.set_ylabel('X座標変化 (pixel)')
+        ax2.set_ylim(-500, 500)
         lines = line1 + line2 + line3
-        labels = ['初期位置からの角度変化', '赤点X座標変化', '緑点X座標変化']
+        labels = [l.get_label() for l in lines]
         ax1.legend(lines, labels, loc='upper left')
     else:
         ax1.legend(loc='upper left')
-
     plt.title('角度変化と視覚刺激X座標変化')
+
+    # --- サブプロット4: 時間窓相関解析 ---
+    plt.subplot(4, 1, 4)
+    if df_corr is not None and not df_corr.empty:
+        plt.plot(df_corr['time'], df_corr['corr_red'], label='角度変化 vs 赤ドット', color='red', marker='o', markersize=3, linestyle='-')
+        plt.plot(df_corr['time'], df_corr['corr_green'], label='角度変化 vs 緑ドット', color='green', marker='x', markersize=3, linestyle='--')
+        plt.axhline(0, color='black', linewidth=0.8, linestyle='--')
+        plt.ylim(-1.0, 1.0)
+        plt.ylabel('相互相関係数')
+        plt.legend()
+        plt.title(f'時間窓相関解析 (窓: {CORR_WINDOW_SIZE_SEC}秒, ステップ: {CORR_STEP_SIZE_SEC}秒)')
+    else:
+        plt.text(0.5, 0.5, '相関解析データなし', ha='center', va='center')
+        plt.title('時間窓相関解析')
+
+    plt.xlabel('時間 (秒)')
+    plt.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
-    # 統計情報を表示
-    print(f"\n=== 加速度ベクトルの統計情報 ({df['psychopy_time'].min():.1f}s - {df['psychopy_time'].max():.1f}s) ===")
-    print(f"平均値: {df['accel_magnitude'].mean():.3f} m/s²")
-    print(f"標準偏差: {df['accel_magnitude'].std():.3f} m/s²")
-    print(f"最大値: {df['accel_magnitude'].max():.3f} m/s²")
-    print(f"最小値: {df['accel_magnitude'].min():.3f} m/s²")
-    print(f"測定時間: {df['psychopy_time'].iloc[-1] - df['psychopy_time'].iloc[0]:.3f} 秒")
-
-    # 角度の統計情報を表示
-    print(f"\n=== 角度の統計情報 ({df['psychopy_time'].min():.1f}s - {df['psychopy_time'].max():.1f}s) ===")
-    print(f"平均との角度の平均値: {df['angle_to_gravity'].mean():.3f} 度")
-    print(f"平均との角度の標準偏差: {df['angle_to_gravity'].std():.3f} 度")
-    print(f"平均との角度の最大値: {df['angle_to_gravity'].max():.3f} 度")
-    print(f"平均との角度の最小値: {df['angle_to_gravity'].min():.3f} 度")
-    print(f"角度変化の平均値: {df['angle_change'].mean():.3f} 度")
-    print(f"角度変化の標準偏差: {df['angle_change'].std():.3f} 度")
-    print(f"角度変化の最大値: {df['angle_change'].max():.3f} 度")
-    print(f"角度変化の最小値: {df['angle_change'].min():.3f} 度")
+    # --- 統計情報の表示 ---
+    print(f"\n=== 統計情報 ({df['psychopy_time'].min():.1f}s - {df['psychopy_time'].max():.1f}s) ===")
+    print(f"加速度ベクトルの平均: {df['accel_magnitude'].mean():.3f} m/s² (標準偏差: {df['accel_magnitude'].std():.3f})")
+    print(f"角度変化の平均: {df['angle_change'].mean():.3f} 度 (標準偏差: {df['angle_change'].std():.3f})")
 
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        print(f"角度解析グラフを保存しました: {output_file}")
-
+        print(f"グラフを保存しました: {output_file}")
     if show_plot:
         plt.show()
-
-    plt.close() # メモリを解放
+    plt.close()
 
 def main():
     """メイン処理"""
-    # デフォルトのCSVファイルパス
     default_csv = "both/20250829_154715_accel_log_trial_2.csv"
-
-    # コマンドライン引数でCSVファイルが指定された場合はそれを使用
-    if len(sys.argv) > 1:
-        csv_file = sys.argv[1]
-    else:
-        csv_file = default_csv
-
-    # ファイルの存在確認
+    csv_file = sys.argv[1] if len(sys.argv) > 1 else default_csv
     if not os.path.exists(csv_file):
         print(f"ファイルが見つかりません: {csv_file}")
         return
-
     print(f"解析対象ファイル: {csv_file}")
 
     # --- フィルタなしで解析 ---
     print("\n--- フィルタなし (生データ) で解析 ---")
     df_raw = calculate_acceleration_magnitude(csv_file, use_filter=False)
-    if df_raw is None:
-        return
+    if df_raw is None: return
+
     df_raw_with_angles, gravity_vector_raw = calculate_gravity_and_angles(df_raw)
+    df_corr_raw = calculate_windowed_correlation(df_raw_with_angles) # 相関を計算
+
     base_name_raw = os.path.splitext(os.path.basename(csv_file))[0]
-    output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw.png")
+    output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.png")
+
     print("\nフィルタなしのグラフを表示します...")
     plot_angle_analysis(
-        df_raw_with_angles[df_raw_with_angles["psychopy_time"]>=START_TIME],
+        df_raw_with_angles[df_raw_with_angles["psychopy_time"] >= START_TIME],
         gravity_vector_raw,
-        output_raw,
+        df_corr=df_corr_raw, # プロット関数に相関データを渡す
+        output_file=output_raw,
         split_plots=SPLIT_PLOTS_BY_TIME,
         segment_duration=SPLIT_DURATION
     )
@@ -364,20 +353,23 @@ def main():
     # --- フィルタありで解析 ---
     print("\n--- ローパスフィルタありで解析 ---")
     df_filtered = calculate_acceleration_magnitude(csv_file, use_filter=True)
-    if df_filtered is None:
-        return
+    if df_filtered is None: return
+
     df_filtered_with_angles, gravity_vector_filtered = calculate_gravity_and_angles(df_filtered)
+    df_corr_filtered = calculate_windowed_correlation(df_filtered_with_angles) # 相関を計算
+
     base_name_filtered = os.path.splitext(os.path.basename(csv_file))[0]
-    output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered_{FILTER_CUTOFF_HZ}Hz.png")
+    output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered_{FILTER_CUTOFF_HZ}Hz_window{CORR_WINDOW_SIZE_SEC}s.png")
+
     print("\nフィルタありのグラフを表示します...")
     plot_angle_analysis(
-        df_filtered_with_angles[df_filtered_with_angles["psychopy_time"]>=START_TIME],
+        df_filtered_with_angles[df_filtered_with_angles["psychopy_time"] >= START_TIME],
         gravity_vector_filtered,
-        output_filtered,
+        df_corr=df_corr_filtered, # プロット関数に相関データを渡す
+        output_file=output_filtered,
         split_plots=SPLIT_PLOTS_BY_TIME,
         segment_duration=SPLIT_DURATION
     )
-
 
 if __name__ == "__main__":
     main()

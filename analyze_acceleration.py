@@ -16,7 +16,7 @@ import re
 from scipy.signal import butter, lfilter
 
 # --- 設定 ---
-# グラフを180秒ごとに分割して出力するかどうか
+# グラフを指定秒数ごとに分割して出力するかどうか
 SPLIT_PLOTS_BY_TIME = True
 SPLIT_DURATION = 200  # 分割する時間（秒）
 START_TIME = 0 # 解析開始時間(s)
@@ -27,10 +27,10 @@ CORR_WINDOW_SIZE_SEC = 10  # 相関解析の窓のサイズ（秒）
 CORR_STEP_SIZE_SEC = 1     # 相関解析の窓をずらすステップサイズ（秒）
 
 # --- 各ファイル処理の設定 ---
-SKIP_PROCESS_FILE = True   # 各ファイルの処理をスキップするかどうか
+FORCE_PROCESS = True        # 各ファイルの処理を強制的に行う
 
 # --- ファイル出力の設定 ---
-SKIP_EXISTING_FILE = True   # 既存のファイルがある場合はスキップするかどうか
+SKIP_EXISTING_FILE = not FORCE_PROCESS   # 既存のファイルがある場合はスキップするかどうか
 
 
 def apply_lowpass_filter(df, cutoff=5, fs=120, order=4):
@@ -347,7 +347,8 @@ def save_angle_data_to_csv(df, output_file):
 
     # 必要な列のみを選択
     columns_to_save = [
-        'psychopy_time', 'accel_x', 'accel_y', 'accel_z', 'angle_change'
+        'psychopy_time', 'accel_x', 'accel_y', 'accel_z', 'angle_change',
+        'red_dot_mean_x', 'green_dot_mean_x', 'red_dot_x_change', 'green_dot_x_change'
     ]
 
     # 存在する列のみを選択
@@ -416,8 +417,8 @@ def get_or_calculate_correlation(csv_file, force_calculate=False):
     df_corr_raw = None
     df_corr_filtered = None
 
-    # スキップ設定が有効で、既存CSVがある場合は読み込み
-    if SKIP_EXISTING_FILE and not force_calculate:
+    # 既存CSVがある場合は読み込み
+    if not force_calculate:
         df_corr_raw = load_correlation_from_csv(corr_raw_csv)
         df_corr_filtered = load_correlation_from_csv(corr_filtered_csv)
 
@@ -589,7 +590,7 @@ def process_single_file(csv_file):
     # --- フィルタなしで解析 ---
     print("\n--- フィルタなし (生データ) で解析 ---")
     df_raw = calculate_acceleration_magnitude(csv_file, use_filter=False)
-    if df_raw is None: 
+    if df_raw is None:
         print(f"エラー: {csv_file} の処理をスキップします")
         return
 
@@ -620,7 +621,7 @@ def process_single_file(csv_file):
     # --- フィルタありで解析 ---
     print("\n--- ローパスフィルタありで解析 ---")
     df_filtered = calculate_acceleration_magnitude(csv_file, use_filter=True)
-    if df_filtered is None: 
+    if df_filtered is None:
         print(f"エラー: {csv_file} のフィルタ処理をスキップします")
         return
 
@@ -679,22 +680,20 @@ def main():
     for i, file in enumerate(target_files, 1):
         print(f"  {i:2d}. {file}")
 
+    if FORCE_PROCESS:
+        # 各ファイルを処理
+        for i, csv_file in enumerate(target_files, 1):
+            try:
+                print(f"\n[{i}/{len(target_files)}] 処理中...")
+                process_single_file(csv_file)
+            except Exception as e:
+                print(f"エラーが発生しました ({csv_file}): {e}")
+                continue
+
     # フォルダが指定された場合は相関係数の一覧表示
     if os.path.isdir(input_path) and len(target_files) > 1:
         print(f"\n=== 相関係数一覧表示 ===")
         plot_correlation_overview(target_files, input_path)
-
-    if SKIP_PROCESS_FILE:
-        return
-
-    # 各ファイルを処理
-    for i, csv_file in enumerate(target_files, 1):
-        try:
-            print(f"\n[{i}/{len(target_files)}] 処理中...")
-            process_single_file(csv_file)
-        except Exception as e:
-            print(f"エラーが発生しました ({csv_file}): {e}")
-            continue
 
     print(f"\n{'='*60}")
     print(f"全ての処理が完了しました。処理ファイル数: {len(target_files)}")

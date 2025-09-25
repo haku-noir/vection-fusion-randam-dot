@@ -26,6 +26,9 @@ FILTER_CUTOFF_HZ = 2 # ローパスフィルタのカットオフ周波数 (Hz)
 CORR_WINDOW_SIZE_SEC = 10  # 相関解析の窓のサイズ（秒）
 CORR_STEP_SIZE_SEC = 1     # 相関解析の窓をずらすステップサイズ（秒）
 
+# --- 各ファイル処理の設定 ---
+SKIP_PROCESS_FILE = True   # 各ファイルの処理をスキップするかどうか
+
 # --- ファイル出力の設定 ---
 SKIP_EXISTING_FILE = True   # 既存のファイルがある場合はスキップするかどうか
 
@@ -374,6 +377,177 @@ def save_correlation_to_csv(df_corr, output_file):
     else:
         print(f"相関データが空のため保存をスキップしました: {output_file}")
 
+def load_correlation_from_csv(csv_file):
+    """
+    相関データをCSVファイルから読み込む
+
+    Args:
+        csv_file (str): 相関データCSVファイルのパス
+
+    Returns:
+        pd.DataFrame: 相関データを含むデータフレーム、読み込みに失敗した場合はNone
+    """
+    try:
+        if os.path.exists(csv_file):
+            df_corr = pd.read_csv(csv_file)
+            if not df_corr.empty and 'time' in df_corr.columns:
+                return df_corr
+    except Exception as e:
+        print(f"相関データの読み込みに失敗しました ({csv_file}): {e}")
+    return None
+
+def get_or_calculate_correlation(csv_file, force_calculate=False):
+    """
+    相関データを取得または計算する（スキップ設定を考慮）
+
+    Args:
+        csv_file (str): 元のCSVファイルのパス
+        force_calculate (bool): 強制的に再計算するかどうか
+
+    Returns:
+        tuple: (df_corr_raw, df_corr_filtered) 相関データのタプル
+    """
+    base_name = os.path.splitext(os.path.basename(csv_file))[0]
+
+    # 相関CSVファイルのパス
+    corr_raw_csv = os.path.join(os.path.dirname(csv_file), f"{base_name}_correlation_raw_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.csv")
+    corr_filtered_csv = os.path.join(os.path.dirname(csv_file), f"{base_name}_correlation_filtered_{FILTER_CUTOFF_HZ}Hz_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.csv")
+
+    df_corr_raw = None
+    df_corr_filtered = None
+
+    # スキップ設定が有効で、既存CSVがある場合は読み込み
+    if SKIP_EXISTING_FILE and not force_calculate:
+        df_corr_raw = load_correlation_from_csv(corr_raw_csv)
+        df_corr_filtered = load_correlation_from_csv(corr_filtered_csv)
+
+        if df_corr_raw is not None and df_corr_filtered is not None:
+            print(f"既存の相関データを読み込みました: {csv_file}")
+            return df_corr_raw, df_corr_filtered
+
+    # CSVがない、または強制計算の場合は完全処理を実行
+    print(f"相関データを新規計算します（完全処理実行）: {csv_file}")
+
+    try:
+        # process_single_fileを実行してCSVファイルを生成
+        process_single_file(csv_file)
+
+        # 処理後にCSVファイルを読み込み
+        df_corr_raw = load_correlation_from_csv(corr_raw_csv)
+        df_corr_filtered = load_correlation_from_csv(corr_filtered_csv)
+
+        if df_corr_raw is not None and df_corr_filtered is not None:
+            print(f"処理完了後に相関データを読み込みました: {csv_file}")
+            return df_corr_raw, df_corr_filtered
+        else:
+            print(f"警告: 処理後にCSVファイルが見つかりませんでした: {csv_file}")
+
+    except Exception as e:
+        print(f"エラー: 相関データ処理に失敗しました ({csv_file}): {e}")
+
+    # フォールバック: 直接計算
+    print(f"フォールバック: 直接相関計算を実行します: {csv_file}")
+
+    # Raw data processing
+    df_raw = calculate_acceleration_magnitude(csv_file, use_filter=False)
+    if df_raw is not None:
+        df_raw_with_angles, _ = calculate_gravity_and_angles(df_raw)
+        df_corr_raw = calculate_windowed_correlation(df_raw_with_angles)
+
+    # Filtered data processing
+    df_filtered = calculate_acceleration_magnitude(csv_file, use_filter=True)
+    if df_filtered is not None:
+        df_filtered_with_angles, _ = calculate_gravity_and_angles(df_filtered)
+        df_corr_filtered = calculate_windowed_correlation(df_filtered_with_angles)
+
+    return df_corr_raw, df_corr_filtered
+
+def plot_correlation_overview(target_files, output_dir):
+    """
+    複数ファイルの相関係数グラフを一覧表示
+
+    Args:
+        target_files (list): 対象CSVファイルのパスリスト
+        output_dir (str): 出力ディレクトリ
+    """
+    if not target_files:
+        return
+
+    print(f"\n相関係数の一覧グラフを作成中...")
+
+    # グリッドサイズを計算
+    n_files = len(target_files)
+    n_cols = min(3, n_files)  # 最大3列
+    n_rows = (n_files + n_cols - 1) // n_cols
+
+    # 各データタイプ（raw, filtered）について個別のグラフを作成
+    for data_type in ['raw', 'filtered']:
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        fig.suptitle(f'相関係数一覧 ({data_type.title()})', fontsize=16, y=0.98)
+
+        # axesを1次元配列に変換（単一プロットの場合も対応）
+        if n_files == 1:
+            axes = [axes]
+        elif n_rows == 1:
+            axes = axes if n_cols > 1 else [axes]
+        else:
+            axes = axes.flatten()
+
+        valid_plots = 0
+
+        for i, csv_file in enumerate(target_files):
+            try:
+                # 相関データを取得
+                df_corr_raw, df_corr_filtered = get_or_calculate_correlation(csv_file)
+                df_corr = df_corr_raw if data_type == 'raw' else df_corr_filtered
+
+                if df_corr is None or df_corr.empty:
+                    axes[i].text(0.5, 0.5, 'データなし', ha='center', va='center')
+                    axes[i].set_title(f'データなし', fontsize=10)
+                else:
+                    # 相関グラフをプロット
+                    if 'corr_red' in df_corr.columns:
+                        axes[i].plot(df_corr['time'], df_corr['corr_red'], 
+                                   label='vs 赤ドット', color='red', linewidth=1.5)
+                    if 'corr_green' in df_corr.columns:
+                        axes[i].plot(df_corr['time'], df_corr['corr_green'], 
+                                   label='vs 緑ドット', color='green', linewidth=1.5, linestyle='--')
+
+                    axes[i].axhline(0, color='black', linewidth=0.5, linestyle='-', alpha=0.5)
+                    axes[i].set_ylim(-1.0, 1.0)
+                    axes[i].grid(True, alpha=0.3)
+                    axes[i].legend(fontsize=8)
+
+                    # タイトルの設定（フォルダ名とファイル名）
+                    rel_path = os.path.relpath(csv_file, output_dir)
+                    folder_name = os.path.dirname(rel_path) if os.path.dirname(rel_path) else '.'
+                    file_name = os.path.splitext(os.path.basename(csv_file))[0]
+                    title = f"{folder_name}/{file_name}"
+                    axes[i].set_title(title, fontsize=9, wrap=True)
+
+                    valid_plots += 1
+
+                axes[i].set_xlabel('時間 (秒)', fontsize=8)
+                axes[i].set_ylabel('相関係数', fontsize=8)
+
+            except Exception as e:
+                print(f"相関グラフ作成エラー ({csv_file}): {e}")
+                axes[i].text(0.5, 0.5, f'エラー\n{str(e)[:50]}', ha='center', va='center', fontsize=8)
+                axes[i].set_title('エラー', fontsize=10)
+
+        # 余ったサブプロットを非表示
+        for i in range(n_files, len(axes)):
+            axes[i].set_visible(False)
+
+        plt.tight_layout()
+
+        # 保存
+        overview_file = os.path.join(output_dir, f"correlation_overview_{data_type}_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.png")
+        plt.savefig(overview_file, dpi=300, bbox_inches='tight')
+        print(f"相関係数一覧グラフを保存しました: {overview_file}")
+
+        plt.close()
+
 def find_target_csv_files(input_path):
     """
     指定されたパスからYYYYMMDD_HHMMSS_accel_log_serial_trial_1.csvファイルを再帰的に検索
@@ -504,6 +678,14 @@ def main():
     print(f"見つかった対象ファイル数: {len(target_files)}")
     for i, file in enumerate(target_files, 1):
         print(f"  {i:2d}. {file}")
+
+    # フォルダが指定された場合は相関係数の一覧表示
+    if os.path.isdir(input_path) and len(target_files) > 1:
+        print(f"\n=== 相関係数一覧表示 ===")
+        plot_correlation_overview(target_files, input_path)
+
+    if SKIP_PROCESS_FILE:
+        return
 
     # 各ファイルを処理
     for i, csv_file in enumerate(target_files, 1):

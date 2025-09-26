@@ -13,7 +13,8 @@ import os
 import sys
 import glob
 import re
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter, coherence
+from scipy.stats import pearsonr
 
 # --- 設定 ---
 # グラフを指定秒数ごとに分割して出力するかどうか
@@ -25,6 +26,12 @@ FILTER_CUTOFF_HZ = 2 # ローパスフィルタのカットオフ周波数 (Hz)
 # --- 相関解析の設定 ---
 CORR_WINDOW_SIZE_SEC = 10  # 相関解析の窓のサイズ（秒）
 CORR_STEP_SIZE_SEC = 1     # 相関解析の窓をずらすステップサイズ（秒）
+
+# --- コヒーレンス解析の設定 ---
+COHERENCE_WINDOW_SIZE_SEC = 10  # コヒーレンス解析の窓のサイズ（秒）
+COHERENCE_STEP_SIZE_SEC = 1     # コヒーレンス解析の窓をずらすステップサイズ（秒）
+TARGET_FREQ_HZ = 0.1            # コヒーレンス解析の目標周波数（Hz）
+FREQ_TOLERANCE_HZ = 0.02        # コヒーレンス解析の許容周波数（Hz）
 
 # --- 各ファイル処理の設定 ---
 FORCE_PROCESS = True        # 各ファイルの処理を強制的に行う
@@ -152,6 +159,94 @@ def calculate_gravity_and_angles(df):
 
     return df_with_angles, gravity_vector
 
+def calculate_windowed_coherence(df):
+    """
+    時間窓コヒーレンス解析を実行する
+
+    Args:
+        df (pd.DataFrame): 角度変化と視覚刺激データを含むデータフレーム
+
+    Returns:
+        pd.DataFrame: 時間ごとのコヒーレンスを含むデータフレーム
+    """
+    print("時間窓コヒーレンス解析を実行します...")
+    if 'angle_change' not in df.columns or 'red_dot_x_change' not in df.columns:
+        print("コヒーレンス解析に必要な列が見つかりません。スキップします。")
+        return pd.DataFrame()
+
+
+    time_diffs = np.diff(df['psychopy_time'])
+    sampling_rate = 1.0 / np.median(time_diffs)
+
+    window_samples = int(COHERENCE_WINDOW_SIZE_SEC * sampling_rate)
+    step_samples = int(COHERENCE_STEP_SIZE_SEC * sampling_rate)
+
+    results = []
+    start_index = 0
+    while start_index + window_samples <= len(df):
+        end_index = start_index + window_samples
+
+        window_time_start = df['psychopy_time'].iloc[start_index]
+        window_time_end = df['psychopy_time'].iloc[end_index-1]
+        window_time_center = (window_time_start + window_time_end) / 2
+
+        angle_data = df['angle_change'].iloc[start_index:end_index].values
+        red_data = df['red_dot_x_change'].iloc[start_index:end_index].values
+        green_data = df['green_dot_x_change'].iloc[start_index:end_index].values
+
+        # コヒーレンス計算
+        try:
+            # 赤色ドットとのコヒーレンス
+            freqs_red, coh_red = coherence(angle_data, red_data, fs=sampling_rate, 
+                                         nperseg=min(len(angle_data)//4, 256))
+
+            # 目標周波数でのコヒーレンス値を取得
+            target_idx = np.argmin(np.abs(freqs_red - TARGET_FREQ_HZ))
+            red_coherence_at_target = coh_red[target_idx]
+
+            # 目標周波数帯域での平均コヒーレンス
+            freq_mask = np.abs(freqs_red - TARGET_FREQ_HZ) <= FREQ_TOLERANCE_HZ
+            red_coherence_mean = np.mean(coh_red[freq_mask]) if np.any(freq_mask) else red_coherence_at_target
+
+            # 緑色ドットとのコヒーレンス
+            freqs_green, coh_green = coherence(angle_data, green_data, fs=sampling_rate,
+                                             nperseg=min(len(angle_data)//4, 256))
+
+            target_idx = np.argmin(np.abs(freqs_green - TARGET_FREQ_HZ))
+            green_coherence_at_target = coh_green[target_idx]
+
+            freq_mask = np.abs(freqs_green - TARGET_FREQ_HZ) <= FREQ_TOLERANCE_HZ
+            green_coherence_mean = np.mean(coh_green[freq_mask]) if np.any(freq_mask) else green_coherence_at_target
+
+            # 相関係数も計算（比較用）
+            red_corr, _ = pearsonr(angle_data, red_data)
+            green_corr, _ = pearsonr(angle_data, green_data)
+
+        except Exception as e:
+            print(f"コヒーレンス計算エラー: {e}")
+            red_coherence_at_target = red_coherence_mean = 0
+            green_coherence_at_target = green_coherence_mean = 0
+            red_corr = green_corr = 0
+
+        results.append({
+            'time_center': window_time_center,
+            'time_start': window_time_start,
+            'time_end': window_time_end,
+            'red_coherence_at_target': red_coherence_at_target,
+            'red_coherence_mean_band': red_coherence_mean,
+            'green_coherence_at_target': green_coherence_at_target,
+            'green_coherence_mean_band': green_coherence_mean,
+            'red_correlation': red_corr,
+            'green_correlation': green_corr,
+            'sampling_rate': sampling_rate
+        })
+
+        start_index += step_samples
+
+    df_coherence = pd.DataFrame(results)
+    print(f"コヒーレンス解析完了: {len(df_coherence)}個の時間窓で解析")
+    return df_coherence
+
 def calculate_windowed_correlation(df):
     """
     時間窓相関解析を実行する
@@ -200,20 +295,21 @@ def calculate_windowed_correlation(df):
     return pd.DataFrame(results)
 
 
-def plot_angle_analysis(df, gravity_vector, df_corr=None, output_file=None, split_plots=False, segment_duration=60):
+def plot_angle_analysis(df, gravity_vector, df_corr=None, df_coherence=None, output_file=None, split_plots=False, segment_duration=60):
     """
-    角度解析と相関解析のグラフをプロット
+    角度解析、相関解析、コヒーレンス解析のグラフをプロット
 
     Args:
         df (pd.DataFrame): 角度データを含むデータフレーム
         gravity_vector (np.array): 重力ベクトル
         df_corr (pd.DataFrame, optional): 相関データを含むデータフレーム. Defaults to None.
+        df_coherence (pd.DataFrame, optional): コヒーレンスデータを含むデータフレーム. Defaults to None.
         output_file (str): 保存するファイル名（Noneの場合は表示のみ）
         split_plots (bool): Trueの場合、segment_durationごとにグラフを分割して保存
         segment_duration (int): 分割する場合の時間（秒）
     """
     if not split_plots:
-        _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
+        _plot_single_chart(df, gravity_vector, df_corr, df_coherence, output_file, show_plot=True)
     else:
         if df.empty:
             print("データが空のため、分割プロットは作成されません。")
@@ -233,29 +329,33 @@ def plot_angle_analysis(df, gravity_vector, df_corr=None, output_file=None, spli
             if df_corr is not None and not df_corr.empty:
                 df_corr_segment = df_corr[(df_corr['time'] >= t_start) & (df_corr['time'] < t_end)]
 
+            df_coherence_segment = None
+            if df_coherence is not None and not df_coherence.empty:
+                df_coherence_segment = df_coherence[(df_coherence['time_center'] >= t_start) & (df_coherence['time_center'] < t_end)]
+
             segment_output_file = f"{base_name}_{int(t_start)}-{int(t_end)}s{ext}"
             # 既存ファイルのチェック
             if SKIP_EXISTING_FILE and os.path.exists(segment_output_file):
                 print(f"既存ファイルをスキップしました: {segment_output_file}")
                 return
             print(f"  - {int(t_start)}s から {int(t_end)}s の区間をプロット中...")
-            _plot_single_chart(df_segment, gravity_vector, df_corr_segment, segment_output_file, show_plot=False)
+            _plot_single_chart(df_segment, gravity_vector, df_corr_segment, df_coherence_segment, segment_output_file, show_plot=False)
         print("分割プロットの作成が完了しました。")
 
 
-def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True):
+def _plot_single_chart(df, gravity_vector, df_corr, df_coherence, output_file, show_plot=True):
     """
-    単一のグラフ（4つのサブプロット）を作成・保存・表示する内部関数
+    単一のグラフ（5つのサブプロット）を作成・保存・表示する内部関数
     """
     if df.empty:
         print("プロットするデータがありません。")
         return
 
-    plt.figure(figsize=(15, 16)) # グラフの高さを変更
+    plt.figure(figsize=(15, 20)) # グラフの高さを増加
     plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
 
     # --- サブプロット1: 加速度の各成分 ---
-    plt.subplot(4, 1, 1)
+    plt.subplot(5, 1, 1)
     plt.plot(df['psychopy_time'], df['accel_x'], label='X軸加速度', alpha=0.7)
     plt.plot(df['psychopy_time'], df['accel_y'], label='Y軸加速度', alpha=0.7)
     plt.plot(df['psychopy_time'], df['accel_z'], label='Z軸加速度', alpha=0.7)
@@ -268,7 +368,7 @@ def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
     plt.grid(True, alpha=0.3)
 
     # --- サブプロット2: 加速度ベクトルの大きさ ---
-    plt.subplot(4, 1, 2)
+    plt.subplot(5, 1, 2)
     plt.plot(df['psychopy_time'], df['accel_magnitude'], color='purple', linewidth=1.5, label='加速度ベクトルの大きさ')
     gravity_magnitude = np.linalg.norm(gravity_vector)
     plt.axhline(y=gravity_magnitude, color='red', linestyle='--', alpha=0.8, label=f'平均の大きさ: {gravity_magnitude:.2f}')
@@ -279,7 +379,7 @@ def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
     plt.grid(True, alpha=0.3)
 
     # --- サブプロット3: 角度変化 + 視覚刺激 ---
-    plt.subplot(4, 1, 3)
+    plt.subplot(5, 1, 3)
     ax1 = plt.gca()
     line1 = ax1.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=1.5, label='初期位置からの角度変化')
     ax1.axhline(y=0, color='black', linestyle='-', alpha=0.5)
@@ -302,7 +402,7 @@ def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
     plt.title('角度変化と視覚刺激X座標変化')
 
     # --- サブプロット4: 時間窓相関解析 ---
-    plt.subplot(4, 1, 4)
+    plt.subplot(5, 1, 4)
     if df_corr is not None and not df_corr.empty:
         plt.plot(df_corr['time'], df_corr['corr_red'], label='角度変化 vs 赤ドット', color='red', marker='o', markersize=3, linestyle='-')
         plt.plot(df_corr['time'], df_corr['corr_green'], label='角度変化 vs 緑ドット', color='green', marker='x', markersize=3, linestyle='--')
@@ -314,6 +414,29 @@ def _plot_single_chart(df, gravity_vector, df_corr, output_file, show_plot=True)
     else:
         plt.text(0.5, 0.5, '相関解析データなし', ha='center', va='center')
         plt.title('時間窓相関解析')
+
+    plt.xlabel('時間 (秒)')
+    plt.grid(True, alpha=0.3)
+
+    # --- サブプロット5: 時間窓コヒーレンス解析 ---
+    plt.subplot(5, 1, 5)
+    if df_coherence is not None and not df_coherence.empty:
+        plt.plot(df_coherence['time_center'], df_coherence['red_coherence_at_target'], 
+                'r-', linewidth=1.5, alpha=0.8, label=f'赤ドット ({TARGET_FREQ_HZ:.1f}Hz)')
+        plt.plot(df_coherence['time_center'], df_coherence['red_coherence_mean_band'], 
+                'r--', linewidth=1.0, alpha=0.6, label=f'赤ドット (帯域平均)')
+        plt.plot(df_coherence['time_center'], df_coherence['green_coherence_at_target'], 
+                'g-', linewidth=1.5, alpha=0.8, label=f'緑ドット ({TARGET_FREQ_HZ:.1f}Hz)')
+        plt.plot(df_coherence['time_center'], df_coherence['green_coherence_mean_band'], 
+                'g--', linewidth=1.0, alpha=0.6, label=f'緑ドット (帯域平均)')
+        plt.axhline(0.5, color='black', linewidth=0.5, linestyle=':', alpha=0.7, label='閾値 0.5')
+        plt.ylim(0, 1.0)
+        plt.ylabel('コヒーレンス')
+        plt.legend()
+        plt.title(f'時間窓コヒーレンス解析 (窓: {COHERENCE_WINDOW_SIZE_SEC}秒, ステップ: {COHERENCE_STEP_SIZE_SEC}秒)')
+    else:
+        plt.text(0.5, 0.5, 'コヒーレンス解析データなし', ha='center', va='center')
+        plt.title('時間窓コヒーレンス解析')
 
     plt.xlabel('時間 (秒)')
     plt.grid(True, alpha=0.3)
@@ -378,6 +501,20 @@ def save_correlation_to_csv(df_corr, output_file):
     else:
         print(f"相関データが空のため保存をスキップしました: {output_file}")
 
+def save_coherence_to_csv(df_coherence, output_file):
+    """
+    コヒーレンスデータをCSVファイルに保存
+
+    Args:
+        df_coherence (pd.DataFrame): コヒーレンスデータを含むデータフレーム
+        output_file (str): 出力 CSV ファイルのパス
+    """
+    if df_coherence is not None and not df_coherence.empty:
+        df_coherence.to_csv(output_file, index=False)
+        print(f"コヒーレンスデータを保存しました: {output_file}")
+    else:
+        print(f"コヒーレンスデータが空のため保存をスキップしました: {output_file}")
+
 def load_correlation_from_csv(csv_file):
     """
     相関データをCSVファイルから読み込む
@@ -395,6 +532,25 @@ def load_correlation_from_csv(csv_file):
                 return df_corr
     except Exception as e:
         print(f"相関データの読み込みに失敗しました ({csv_file}): {e}")
+    return None
+
+def load_coherence_from_csv(csv_file):
+    """
+    コヒーレンスデータをCSVファイルから読み込む
+
+    Args:
+        csv_file (str): コヒーレンスデータCSVファイルのパス
+
+    Returns:
+        pd.DataFrame: コヒーレンスデータを含むデータフレーム、読み込みに失敗した場合はNone
+    """
+    try:
+        if os.path.exists(csv_file):
+            df_coherence = pd.read_csv(csv_file)
+            if not df_coherence.empty and 'time_center' in df_coherence.columns:
+                return df_coherence
+    except Exception as e:
+        print(f"コヒーレンスデータの読み込みに失敗しました ({csv_file}): {e}")
     return None
 
 def get_or_calculate_correlation(csv_file, force_calculate=False):
@@ -462,6 +618,59 @@ def get_or_calculate_correlation(csv_file, force_calculate=False):
         df_corr_filtered = calculate_windowed_correlation(df_filtered_with_angles)
 
     return df_corr_raw, df_corr_filtered
+
+def get_or_calculate_coherence(csv_file, force_calculate=False):
+    """
+    コヒーレンスデータを取得または計算する（スキップ設定を考慮）
+
+    Args:
+        csv_file (str): 元のCSVファイルのパス
+        force_calculate (bool): 強制的に再計算するかどうか
+
+    Returns:
+        pd.DataFrame: コヒーレンスデータ、Noneの場合は計算できなかった
+    """
+    # コヒーレンスデータCSVファイル名を生成
+    base_name = os.path.splitext(os.path.basename(csv_file))[0]
+    coherence_csv_file = os.path.join(os.path.dirname(csv_file), f"{base_name}_coherence_analysis.csv")
+
+    # 既存ファイルのチェック
+    if not force_calculate and SKIP_EXISTING_FILE and os.path.exists(coherence_csv_file):
+        print(f"コヒーレンスデータCSVが既に存在します、計算をスキップ: {coherence_csv_file}")
+        return load_coherence_from_csv(coherence_csv_file)
+
+    # CSVファイルを読み込んでコヒーレンス解析を実行
+    try:
+        df = pd.read_csv(csv_file)
+        print(f"コヒーレンス解析用データを読み込みました: {csv_file}")
+    except Exception as e:
+        print(f"CSVファイルの読み込みに失敗しました: {csv_file}, エラー: {e}")
+        return None
+
+    # angle_change列が存在しない場合は角度解析を実行
+    if 'angle_change' not in df.columns:
+        print("angle_change列が見つかりません。角度解析を実行します...")
+        df_with_angles, _ = calculate_gravity_and_angles(df)
+        df = df_with_angles
+
+    # 視覚刺激の変化量列が存在しない場合は計算
+    if 'red_dot_x_change' not in df.columns or 'green_dot_x_change' not in df.columns:
+        if 'red_dot_mean_x' in df.columns and 'green_dot_mean_x' in df.columns:
+            red_initial = df['red_dot_mean_x'].iloc[0] if len(df) > 0 else 0
+            green_initial = df['green_dot_mean_x'].iloc[0] if len(df) > 0 else 0
+            df['red_dot_x_change'] = df['red_dot_mean_x'] - red_initial
+            df['green_dot_x_change'] = df['green_dot_mean_x'] - green_initial
+        else:
+            print("視覚刺激データが見つかりません。")
+            return None
+    # コヒーレンス解析を実行
+    df_coherence = calculate_windowed_coherence(df)
+
+    if df_coherence is not None and not df_coherence.empty:
+        # コヒーレンスデータをCSVに保存
+        save_coherence_to_csv(df_coherence, coherence_csv_file)
+
+    return df_coherence
 
 def plot_correlation_overview(target_files, output_dir):
     """
@@ -549,6 +758,98 @@ def plot_correlation_overview(target_files, output_dir):
 
         plt.close()
 
+def plot_coherence_overview(target_files, output_dir):
+    """
+    複数ファイルのコヒーレンス解析結果グラフを一覧表示
+
+    Args:
+        target_files (list): 対象CSVファイルのパスリスト
+        output_dir (str): 出力ディレクトリ
+    """
+    print(f"コヒーレンス解析一覧グラフを作成します... 対象ファイル数: {len(target_files)}")
+
+    if not target_files:
+        print("対象ファイルがありません")
+        return
+
+    # 1ページあたりのグラフ数と総ページ数を計算
+    graphs_per_page = 6
+    total_pages = (len(target_files) + graphs_per_page - 1) // graphs_per_page
+
+    for page in range(total_pages):
+        start_idx = page * graphs_per_page
+        end_idx = min(start_idx + graphs_per_page, len(target_files))
+        current_files = target_files[start_idx:end_idx]
+
+        # 図の設定
+        fig, axes = plt.subplots(len(current_files), 1, figsize=(12, 3*len(current_files)))
+        if len(current_files) == 1:
+            axes = [axes]
+
+        valid_plots = 0
+
+        for i, csv_file in enumerate(current_files):
+            try:
+                print(f"コヒーレンス解析処理中: {csv_file}")
+
+                # コヒーレンスデータを取得または計算
+                df_coherence = get_or_calculate_coherence(csv_file, force_calculate=FORCE_PROCESS)
+
+                if df_coherence is not None and not df_coherence.empty:
+                    print(f"コヒーレンスデータ取得成功: {len(df_coherence)}行")
+
+                    # コヒーレンス結果をプロット
+                    axes[i].plot(df_coherence['time_center'], df_coherence['red_coherence_at_target'], 
+                                'r-', linewidth=1.5, alpha=0.8, label=f'赤ドット ({TARGET_FREQ_HZ:.1f}Hz)')
+                    axes[i].plot(df_coherence['time_center'], df_coherence['red_coherence_mean_band'], 
+                                'r--', linewidth=1.0, alpha=0.6, label=f'赤ドット (帯域平均)')
+                    axes[i].plot(df_coherence['time_center'], df_coherence['green_coherence_at_target'], 
+                                'g-', linewidth=1.5, alpha=0.8, label=f'緑ドット ({TARGET_FREQ_HZ:.1f}Hz)')
+                    axes[i].plot(df_coherence['time_center'], df_coherence['green_coherence_mean_band'], 
+                                'g--', linewidth=1.0, alpha=0.6, label=f'緑ドット (帯域平均)')
+
+                    axes[i].axhline(0.5, color='black', linewidth=0.5, linestyle=':', alpha=0.7, label='閾値 0.5')
+                    axes[i].set_ylim(0, 1.0)
+                    axes[i].grid(True, alpha=0.3)
+                    axes[i].legend(fontsize=8)
+
+                    # タイトルの設定（フォルダ名とファイル名）
+                    rel_path = os.path.relpath(csv_file, output_dir)
+                    folder_name = os.path.dirname(rel_path) if os.path.dirname(rel_path) else '.'
+                    file_name = os.path.splitext(os.path.basename(csv_file))[0]
+                    title = f"{folder_name}/{file_name}"
+                    axes[i].set_title(title, fontsize=9, wrap=True)
+
+                    valid_plots += 1
+                else:
+                    print(f"警告: コヒーレンスデータが空またはNullです: {csv_file}")
+                    axes[i].text(0.5, 0.5, 'コヒーレンスデータなし', ha='center', va='center', fontsize=12)
+
+                axes[i].set_xlabel('時間 (秒)', fontsize=8)
+                axes[i].set_ylabel('コヒーレンス', fontsize=8)
+
+            except Exception as e:
+                print(f"コヒーレンスグラフ作成エラー ({csv_file}): {e}")
+                axes[i].text(0.5, 0.5, f'エラー\n{str(e)[:50]}', ha='center', va='center', fontsize=8)
+
+        # 空のサブプロットを非表示
+        for j in range(len(current_files), len(axes)):
+            axes[j].set_visible(False)
+
+        # 全体タイトルと調整
+        page_suffix = f"_page{page+1}" if total_pages > 1 else ""
+        fig.suptitle(f'コヒーレンス解析一覧 (窓: {COHERENCE_WINDOW_SIZE_SEC}s, ステップ: {COHERENCE_STEP_SIZE_SEC}s, 目標周波数: {TARGET_FREQ_HZ:.1f}Hz){page_suffix}', 
+                     fontsize=14)
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.93)
+
+        # ファイル保存
+        overview_file = os.path.join(output_dir, f"coherence_overview_window{COHERENCE_WINDOW_SIZE_SEC}s_step{COHERENCE_STEP_SIZE_SEC}s{page_suffix}.png")
+        plt.savefig(overview_file, dpi=300, bbox_inches='tight')
+        print(f"コヒーレンス一覧グラフを保存しました: {overview_file}")
+
+        plt.close()
+
 def find_target_csv_files(input_path):
     """
     指定されたパスからYYYYMMDD_HHMMSS_accel_log_serial_trial_1.csvファイルを再帰的に検索
@@ -596,6 +897,7 @@ def process_single_file(csv_file):
 
     df_raw_with_angles, gravity_vector_raw = calculate_gravity_and_angles(df_raw)
     df_corr_raw = calculate_windowed_correlation(df_raw_with_angles) # 相関を計算
+    df_coherence_raw = calculate_windowed_coherence(df_raw_with_angles) # コヒーレンスを計算
 
     base_name_raw = os.path.splitext(os.path.basename(csv_file))[0]
     output_raw = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angle_analysis_raw_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.png")
@@ -603,16 +905,19 @@ def process_single_file(csv_file):
     # CSV出力ファイル名を生成
     output_angles_raw_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_angles_raw.csv")
     output_corr_raw_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_correlation_raw_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.csv")
+    output_coherence_raw_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_raw}_coherence_raw_window{COHERENCE_WINDOW_SIZE_SEC}s_step{COHERENCE_STEP_SIZE_SEC}s.csv")
 
     # CSVファイルに保存
     save_angle_data_to_csv(df_raw_with_angles, output_angles_raw_csv)
     save_correlation_to_csv(df_corr_raw, output_corr_raw_csv)
+    save_coherence_to_csv(df_coherence_raw, output_coherence_raw_csv)
 
     print("フィルタなしのグラフを作成します...")
     plot_angle_analysis(
         df_raw_with_angles[df_raw_with_angles["psychopy_time"] >= START_TIME],
         gravity_vector_raw,
         df_corr=df_corr_raw, # プロット関数に相関データを渡す
+        df_coherence=df_coherence_raw, # プロット関数にコヒーレンスデータを渡す
         output_file=output_raw,
         split_plots=SPLIT_PLOTS_BY_TIME,
         segment_duration=SPLIT_DURATION
@@ -627,6 +932,7 @@ def process_single_file(csv_file):
 
     df_filtered_with_angles, gravity_vector_filtered = calculate_gravity_and_angles(df_filtered)
     df_corr_filtered = calculate_windowed_correlation(df_filtered_with_angles) # 相関を計算
+    df_coherence_filtered = calculate_windowed_coherence(df_filtered_with_angles) # コヒーレンスを計算
 
     base_name_filtered = os.path.splitext(os.path.basename(csv_file))[0]
     output_filtered = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angle_analysis_filtered_{FILTER_CUTOFF_HZ}Hz_window{CORR_WINDOW_SIZE_SEC}s.png")
@@ -634,16 +940,19 @@ def process_single_file(csv_file):
     # CSV出力ファイル名を生成
     output_angles_filtered_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_angles_filtered_{FILTER_CUTOFF_HZ}Hz.csv")
     output_corr_filtered_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_correlation_filtered_{FILTER_CUTOFF_HZ}Hz_window{CORR_WINDOW_SIZE_SEC}s_step{CORR_STEP_SIZE_SEC}s.csv")
+    output_coherence_filtered_csv = os.path.join(os.path.dirname(csv_file), f"{base_name_filtered}_coherence_filtered_{FILTER_CUTOFF_HZ}Hz_window{COHERENCE_WINDOW_SIZE_SEC}s_step{COHERENCE_STEP_SIZE_SEC}s.csv")
 
     # CSVファイルに保存
     save_angle_data_to_csv(df_filtered_with_angles, output_angles_filtered_csv)
     save_correlation_to_csv(df_corr_filtered, output_corr_filtered_csv)
+    save_coherence_to_csv(df_coherence_filtered, output_coherence_filtered_csv)
 
     print("フィルタありのグラフを作成します...")
     plot_angle_analysis(
         df_filtered_with_angles[df_filtered_with_angles["psychopy_time"] >= START_TIME],
         gravity_vector_filtered,
         df_corr=df_corr_filtered, # プロット関数に相関データを渡す
+        df_coherence=df_coherence_filtered, # プロット関数にコヒーレンスデータを渡す
         output_file=output_filtered,
         split_plots=SPLIT_PLOTS_BY_TIME,
         segment_duration=SPLIT_DURATION
@@ -690,10 +999,13 @@ def main():
                 print(f"エラーが発生しました ({csv_file}): {e}")
                 continue
 
-    # フォルダが指定された場合は相関係数の一覧表示
+    # フォルダが指定された場合は相関係数とコヒーレンスの一覧表示
     if os.path.isdir(input_path) and len(target_files) > 1:
         print(f"\n=== 相関係数一覧表示 ===")
         plot_correlation_overview(target_files, input_path)
+
+        print(f"\n=== コヒーレンス一覧表示 ===")
+        plot_coherence_overview(target_files, input_path)
 
     print(f"\n{'='*60}")
     print(f"全ての処理が完了しました。処理ファイル数: {len(target_files)}")

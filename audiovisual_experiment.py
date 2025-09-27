@@ -152,9 +152,7 @@ CENTER_LINE_WIDTH = 8        # 中心線の太さ [pix]
 # ログ
 LOG_DIR = PANNING_MODE
 os.makedirs(LOG_DIR, exist_ok=True)
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-MAIN_LOG_FILENAME = f'{timestamp}_experiment_log.csv'
-MAIN_LOG_PATH = os.path.join(LOG_DIR, MAIN_LOG_FILENAME)
+# experiment_logファイルは最初の試行の stimulus_start_time に基づいて作成
 
 # M5Stackとのシリアル通信を管理するクラス
 class SerialCommunicator:
@@ -827,7 +825,7 @@ def create_and_show_acceleration_graph(df, trial_idx, graph_path, communication_
 
 # 加速度グラフを保存（修正版）
 def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
-    """WiFi経由で受信した加速度データとドット座標からデータを保存（統合データはオプション）"""
+    """WiFi経由で受信した加速度データとドット座標からグラフを生成"""
     try:
         if not accel_data or not timestamps:
             print(f"Trial {trial_idx}: No data available. Skipping save.")
@@ -835,7 +833,7 @@ def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_p
 
         # 加速度センサデータを別ファイルに保存
         accel_csv_path = save_accelerometer_data_only(accel_data, trial_idx, log_dir)
-        
+
         # ランダムドットデータを別ファイルに保存（生データ完全保持）
         dot_csv_path = save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir)
 
@@ -865,11 +863,34 @@ def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_p
     except Exception as e:
         print(f"Error saving data for trial {trial_idx}: {e}")
 
-def save_accelerometer_data_only(accel_data, trial_idx, log_dir):
-    """加速度センサデータのみを別ファイルに保存（accel_time基準）"""
+def save_initial_dot_positions(red_initial_pos, green_initial_pos, trial_idx, log_dir, file_timestamp):
+    """ランダムドットの初期位置をCSVファイルに保存（指定されたタイムスタンプを使用）"""
     try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(log_dir, f'{timestamp}_accel_sensor_trial_{trial_idx}.csv')
+        csv_path = os.path.join(log_dir, f'{file_timestamp}_initial_dot_positions_trial_{trial_idx}.csv')
+
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            # ヘッダー行
+            writer.writerow(['dot_index', 'red_x', 'red_y', 'green_x', 'green_y'])
+
+            # 各ドットの初期位置を保存
+            for i in range(len(red_initial_pos)):
+                red_pos = red_initial_pos[i] if i < len(red_initial_pos) else [0, 0]
+                green_pos = green_initial_pos[i] if i < len(green_initial_pos) else [0, 0]
+                writer.writerow([i, red_pos[0], red_pos[1], green_pos[0], green_pos[1]])
+
+        print(f"ランダムドットの初期位置を保存しました: {csv_path}")
+        print(f"ドット数: {len(red_initial_pos)}")
+        return csv_path
+
+    except Exception as e:
+        print(f"初期位置データ保存エラー: {e}")
+        return None
+
+def save_accelerometer_data_only(accel_data, trial_idx, log_dir, file_timestamp):
+    """加速度センサデータのみを別ファイルに保存（accel_time基準、指定されたタイムスタンプを使用）"""
+    try:
+        csv_path = os.path.join(log_dir, f'{file_timestamp}_accel_sensor_trial_{trial_idx}.csv')
 
         with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
@@ -892,11 +913,10 @@ def save_accelerometer_data_only(accel_data, trial_idx, log_dir):
         print(f"加速度センサデータ保存エラー: {e}")
         return None
 
-def save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
-    """ランダムドットデータのみを別ファイルに保存（生データ完全保持、元のタイムスタンプ使用）"""
+def save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir, file_timestamp):
+    """ランダムドットデータのみを別ファイルに保存（生データ完全保持、元のタイムスタンプ使用、指定されたタイムスタンプを使用）"""
     try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(log_dir, f'{timestamp}_random_dot_trial_{trial_idx}.csv')
+        csv_path = os.path.join(log_dir, f'{file_timestamp}_random_dot_trial_{trial_idx}.csv')
 
         with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
@@ -912,7 +932,7 @@ def save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps
                 if i < len(red_dot_positions) and i < len(green_dot_positions):
                     red_pos = red_dot_positions[i] if i < len(red_dot_positions) else [0, 0]
                     green_pos = green_dot_positions[i] if i < len(green_dot_positions) else [0, 0]
-                    
+
                     # 元のタイムスタンプと位置データをそのまま保存
                     writer.writerow([timestamps[i], red_pos[0], red_pos[1], green_pos[0], green_pos[1]])
 
@@ -925,14 +945,14 @@ def save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps
         return None
 
 def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
-    """データを別々のファイルに保存し、オプションで統合データとグラフを出力"""
+    """シリアル経由で受信した加速度データをCSVファイルに保存"""
     try:
         # 加速度センサデータを別ファイルに保存
         accel_csv_path = save_accelerometer_data_only(accel_data, trial_idx, log_dir)
-        
+
         # ランダムドットデータを別ファイルに保存（生データ完全保持）
         dot_csv_path = save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir)
-        
+
         # 統合データファイル作成（設定でONの場合のみ）
         if SAVE_COMBINED_DATA:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -958,7 +978,7 @@ def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green
             print(f"統合データファイルを保存しました: {csv_path}")
 
             # グラフを作成・表示
-            graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.png')
+            graph_path = os.path.join(log_dir, f'{file_timestamp}_accel_log_serial_trial_{trial_idx}.png')
             create_and_show_acceleration_graph(df, trial_idx, graph_path, 'Serial')
         else:
             print("統合データファイル出力はOFFに設定されています")
@@ -1016,24 +1036,11 @@ def save_serial_acceleration_data(accel_data, red_dot_positions, green_dot_posit
         print(f"シリアル加速度データ保存エラー: {e}")
 
 # ------------------------------------------------------------------
-# 5. ログファイルオープン
+# 5. ログファイル設定（最初の試行開始時に作成）
 # ------------------------------------------------------------------
-try:
-    main_log_fh = open(MAIN_LOG_PATH, 'w', newline='', encoding='utf-8')
-    main_log_csv = csv.writer(main_log_fh)
-    header = [
-        'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
-        'audio_source_mode', 'audio_sync_type', 'audio_file_used',
-        'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
-        'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
-        'left_ear_pos', 'right_ear_pos', 'distance_attenuation', 'min_distance_gain',
-        'sample_rate', 'max_itd_s'
-    ]
-    main_log_csv.writerow(header)
-except IOError as e:
-    print(f"ログファイルを開けませんでした: {MAIN_LOG_PATH}")
-    print(f"エラー: {e}")
-    core.quit()
+main_log_fh = None
+main_log_csv = None
+MAIN_LOG_PATH = None
 
 
 # ------------------------------------------------------------------
@@ -1105,7 +1112,9 @@ else:
 print(f"\nデータ保存設定:")
 print(f"- 加速度センサデータ: 個別ファイルに保存 (accel_sensor_trial_N.csv)")
 print(f"- ランダムドットデータ: 個別ファイルに保存 (random_dot_trial_N.csv)")
+print(f"- ランダムドット初期位置: 個別ファイルに保存 (initial_dot_positions_trial_N.csv)")
 print(f"- 統合データファイル: {'有効' if SAVE_COMBINED_DATA else '無効'}")
+print(f"- experiment_log: 刺激開始時間を記録")
 print(f"- 最大試行回数: {MAX_TRIALS}")
 print()
 
@@ -1113,6 +1122,7 @@ experiment_running = True
 trial_idx = 1
 response_mapping = {'r': 'red', 'g': 'green'}
 stereo_snd = None
+file_timestamp = None  # 全試行で使用するタイムスタンプ
 
 try:
     while experiment_running and trial_idx <= MAX_TRIALS:
@@ -1138,6 +1148,25 @@ try:
         red_current_pos, green_current_pos = init_positions(), init_positions()
         red_base_x, green_base_x = red_current_pos[:, 0].copy(), green_current_pos[:, 0].copy()
         last_t = 0.0
+
+        # 初期位置を保存
+        save_initial_dot_positions(red_current_pos, green_current_pos, trial_idx, LOG_DIR, file_timestamp)
+
+        # ----- サウンド準備 -----
+        if stereo_snd and stereo_snd.status != constants.STOPPED:
+            stereo_snd.stop()
+        stereo_snd = build_audio_source(sync_red, PANNING_MODE)
+
+        # ----- 刺激開始時間を記録 -----
+        stimulus_start_time = datetime.now()
+        stimulus_start_timestamp = stimulus_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        stimulus_start_time_str = stimulus_start_time.strftime('%H:%M:%S.%f')[:-3]
+        
+        # 最初の試行でファイル名用のタイムスタンプを設定（全試行で同じタイムスタンプを使用）
+        if trial_idx == 1:
+            file_timestamp = stimulus_start_time.strftime('%Y%m%d_%H%M%S')
+
+        print(f"Trial {trial_idx}: 刺激開始時間 = {stimulus_start_timestamp}")
 
         # ----- サウンド準備 -----
         if stereo_snd and stereo_snd.status != constants.STOPPED:
@@ -1276,10 +1305,34 @@ try:
             beep_sound.play()
             print(f"Trial {trial_idx}: ビープ音再生（試行終了）")
 
+        # 最初の試行でexperiment_logファイルを初期化
+        if trial_idx == 1:
+            MAIN_LOG_FILENAME = f'{file_timestamp}_experiment_log.csv'
+            MAIN_LOG_PATH = os.path.join(LOG_DIR, MAIN_LOG_FILENAME)
+            try:
+                main_log_fh = open(MAIN_LOG_PATH, 'w', newline='', encoding='utf-8')
+                main_log_csv = csv.writer(main_log_fh)
+                header = [
+                    'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
+                    'stimulus_start_time', 'stimulus_start_timestamp',  # 刺激開始時間の追加
+                    'audio_source_mode', 'audio_sync_type', 'audio_file_used',
+                    'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
+                    'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
+                    'left_ear_pos', 'right_ear_pos', 'distance_attenuation', 'min_distance_gain',
+                    'sample_rate', 'max_itd_s'
+                ]
+                main_log_csv.writerow(header)
+                print(f"experiment_logファイルを作成しました: {MAIN_LOG_PATH}")
+            except IOError as e:
+                print(f"ログファイルを開けませんでした: {MAIN_LOG_PATH}")
+                print(f"エラー: {e}")
+                core.quit()
+
         # メインログに記録（ESCキーが押された場合でも記録）
         audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
         log_data = [
             trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
+            stimulus_start_time_str, stimulus_start_timestamp,  # 刺激開始時間を追加
             AUDIO_SOURCE_MODE, audio_sync_type, audio_file_used,
             WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
             OSC_AMP, audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,
@@ -1315,7 +1368,7 @@ try:
             # グラフを生成
             save_acceleration_graph_from_data(
                 accel_data, red_dot_positions, green_dot_positions, 
-                timestamps, trial_idx, LOG_DIR
+                timestamps, trial_idx, LOG_DIR, file_timestamp
             )
 
         elif COMMUNICATION_MODE == 'SERIAL' and serial_comm:
@@ -1358,14 +1411,14 @@ try:
 
             # シリアルデータをCSVファイルに保存し、グラフを表示
             if accel_data:
-                save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, LOG_DIR)
+                save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, LOG_DIR, file_timestamp)
 
             # 次の試行のためにバッファをクリア
             serial_comm.get_accel_data()
 
         # 試行インデックスを増加
         trial_idx += 1
-        
+
         # 最大試行回数に達した場合は実験終了
         if trial_idx > MAX_TRIALS:
             print(f"\n最大試行回数 {MAX_TRIALS} に達しました。実験を終了します。")

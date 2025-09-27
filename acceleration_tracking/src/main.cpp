@@ -25,6 +25,7 @@ const size_t MAX_BUFFER_SIZE = 30000;  // 最大保存数（120Hz×83秒分の�
 // 測定状態
 bool measuring = false;
 unsigned long measurement_start_time = 0;
+bool reset_timing_flag = false;  // タイミングリセットフラグ
 
 // 単位変換のための定数（1G = 9.80665 m/s^2）
 const float G_TO_MS2 = 9.80665;
@@ -54,6 +55,7 @@ void stopMeasurement();
 void sendDataToPC();
 void sendDataViaSerial(const AccelData& data);
 void calibrateAccelerometer();
+void resetCollectionTiming();  // タイミング変数リセット用関数
 
 void setup() {
   // M5Stackの初期化（警告対応：パラメータを明示的に指定）
@@ -183,6 +185,9 @@ void startMeasurement() {
   measuring = true;
   measurement_start_time = micros();
   accel_buffer.clear();
+  
+  // タイミング変数をリセット（最初のサンプルの不正な間隔を防ぐ）
+  resetCollectionTiming();
 
   // WiFiモードの場合のみUDP送信
   if (COMMUNICATION_MODE == WIFI_MODE) {
@@ -268,7 +273,25 @@ void collectAccelData() {
 
   // 高頻度サンプリングのため、static変数でタイミング制御
   static unsigned long last_sample = 0;
+  static bool timing_initialized = false;
   unsigned long now = micros();
+
+  // タイミングリセットが要求された場合
+  if (reset_timing_flag) {
+    last_sample = now;
+    timing_initialized = false;
+    reset_timing_flag = false;
+    Serial.println("DEBUG: Collection timing reset applied");
+  }
+
+  // 測定開始時にタイミングを初期化
+  if (!timing_initialized) {
+    last_sample = now;
+    timing_initialized = true;
+    Serial.println("DEBUG: Collection timing initialized");
+    // 最初のサンプルは即座に取得せず、適切な間隔で開始
+    return;
+  }
 
   // 120Hz (約8.33ms間隔) でサンプリング
   // 1/120秒 = 8333マイクロ秒
@@ -454,4 +477,10 @@ void sendDataViaSerial(const AccelData& data) {
   // フォーマット: ACCEL_DATA,timestamp,x,y,z
   Serial.printf("ACCEL_DATA,%lu,%.6f,%.6f,%.6f\n", 
                 data.timestamp, data.x, data.y, data.z);
+}
+
+// collectAccelData()のstatic変数をリセットする関数
+void resetCollectionTiming() {
+  reset_timing_flag = true;
+  Serial.println("DEBUG: Collection timing reset requested");
 }

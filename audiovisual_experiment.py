@@ -133,6 +133,10 @@ MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モ�
 # 試行
 TRIAL_DURATION   = 180.0      # 各試行の刺激掲示時間 [s]
 ITI              = 1.0       # 刺激間インターバル [s]
+MAX_TRIALS       = 1         # 最大試行回数（デフォルト1回）
+
+# データ出力設定
+SAVE_COMBINED_DATA = False   # 統合データファイルを出力するかどうか（互換性用）
 
 # ビープ音設定
 USE_BEEP = False              # ビープ音を使用するかどうか
@@ -823,66 +827,146 @@ def create_and_show_acceleration_graph(df, trial_idx, graph_path, communication_
 
 # 加速度グラフを保存（修正版）
 def save_acceleration_graph_from_data(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
-    """WiFi経由で受信した加速度データとドット座標からグラフを生成"""
+    """WiFi経由で受信した加速度データとドット座標からデータを保存（統合データはオプション）"""
     try:
         if not accel_data or not timestamps:
-            print(f"Trial {trial_idx}: No data available. Skipping graph.")
+            print(f"Trial {trial_idx}: No data available. Skipping save.")
             return
 
-        # DataFrameを作成
-        df = create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps)
+        # 加速度センサデータを別ファイルに保存
+        accel_csv_path = save_accelerometer_data_only(accel_data, trial_idx, log_dir)
+        
+        # ランダムドットデータを別ファイルに保存（生データ完全保持）
+        dot_csv_path = save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir)
 
-        if df.empty:
-            print(f"Trial {trial_idx}: DataFrame is empty. Skipping graph.")
-            return
+        # 統合データファイル作成（設定でONの場合のみ）
+        if SAVE_COMBINED_DATA:
+            # DataFrameを作成
+            df = create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps)
 
-        # ファイルパス準備
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.png')
-        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.csv')
+            if df.empty:
+                print(f"Trial {trial_idx}: DataFrame is empty. Skipping combined data and graph.")
+                return
 
-        # グラフを作成・表示
-        create_and_show_acceleration_graph(df, trial_idx, graph_path, 'WiFi')
+            # ファイルパス準備
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.png')
+            csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_trial_{trial_idx}.csv')
 
-        # CSVファイルも保存
-        df.to_csv(csv_path, index=False)
-        print(f"Saved data to {csv_path}")
+            # グラフを作成・表示
+            create_and_show_acceleration_graph(df, trial_idx, graph_path, 'WiFi')
+
+            # 統合CSVファイルも保存（レガシー互換性のため）
+            df.to_csv(csv_path, index=False)
+            print(f"統合データファイルを保存しました: {csv_path}")
+        else:
+            print("統合データファイル出力はOFFに設定されています")
 
     except Exception as e:
-        print(f"Error creating graph for trial {trial_idx}: {e}")
+        print(f"Error saving data for trial {trial_idx}: {e}")
 
-def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
-    """シリアル経由で受信した加速度データをCSVファイルに保存し、グラフを表示（ドット位置データ付き）"""
+def save_accelerometer_data_only(accel_data, trial_idx, log_dir):
+    """加速度センサデータのみを別ファイルに保存（accel_time基準）"""
     try:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.csv')
+        csv_path = os.path.join(log_dir, f'{timestamp}_accel_sensor_trial_{trial_idx}.csv')
 
-        # DataFrameを作成
-        df = create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps)
-
-        if df.empty:
-            print(f"Trial {trial_idx}: No data available. Skipping graph.")
-            return
-
-        # CSVファイルに保存
         with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
-            # ヘッダー行
-            writer.writerow(['psychopy_time', 'accel_time', 'accel_x', 'accel_y', 'accel_z', 'red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y'])
+            # ヘッダー行（加速度センサデータのみ）
+            writer.writerow(['accel_time', 'accel_x', 'accel_y', 'accel_z'])
 
-            # データ行
-            for _, row in df.iterrows():
-                writer.writerow(row.tolist())
+            # 加速度データを時間でソート
+            accel_data_sorted = sorted(accel_data, key=lambda x: x[0])
 
-        print(f"シリアル加速度データを保存しました: {csv_path}")
+            # データ行（M5Stack時間をそのまま使用）
+            for timestamp_us, x, y, z in accel_data_sorted:
+                timestamp_s = timestamp_us / 1000000.0  # マイクロ秒を秒に変換
+                writer.writerow([timestamp_s, x, y, z])
+
+        print(f"加速度センサデータを保存しました: {csv_path}")
         print(f"データポイント数: {len(accel_data)}")
-
-        # グラフを作成・表示
-        graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.png')
-        create_and_show_acceleration_graph(df, trial_idx, graph_path, 'Serial')
+        return csv_path
 
     except Exception as e:
-        print(f"シリアル加速度データ保存・グラフ作成エラー: {e}")
+        print(f"加速度センサデータ保存エラー: {e}")
+        return None
+
+def save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
+    """ランダムドットデータのみを別ファイルに保存（生データ完全保持、元のタイムスタンプ使用）"""
+    try:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_path = os.path.join(log_dir, f'{timestamp}_random_dot_trial_{trial_idx}.csv')
+
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            # ヘッダー行（ランダムドットデータのみ）
+            writer.writerow(['psychopy_time', 'red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y'])
+
+            if not timestamps or not red_dot_positions or not green_dot_positions:
+                print("Warning: No dot position data available")
+                return csv_path
+
+            # 生データをそのまま保存（正規化や間引き処理は行わない）
+            for i in range(len(timestamps)):
+                if i < len(red_dot_positions) and i < len(green_dot_positions):
+                    red_pos = red_dot_positions[i] if i < len(red_dot_positions) else [0, 0]
+                    green_pos = green_dot_positions[i] if i < len(green_dot_positions) else [0, 0]
+                    
+                    # 元のタイムスタンプと位置データをそのまま保存
+                    writer.writerow([timestamps[i], red_pos[0], red_pos[1], green_pos[0], green_pos[1]])
+
+        print(f"ランダムドット生データを保存しました: {csv_path}")
+        print(f"データポイント数: {len(timestamps)}")
+        return csv_path
+
+    except Exception as e:
+        print(f"ランダムドットデータ保存エラー: {e}")
+        return None
+
+def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
+    """データを別々のファイルに保存し、オプションで統合データとグラフを出力"""
+    try:
+        # 加速度センサデータを別ファイルに保存
+        accel_csv_path = save_accelerometer_data_only(accel_data, trial_idx, log_dir)
+        
+        # ランダムドットデータを別ファイルに保存（生データ完全保持）
+        dot_csv_path = save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir)
+        
+        # 統合データファイル作成（設定でONの場合のみ）
+        if SAVE_COMBINED_DATA:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            csv_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.csv')
+
+            # DataFrameを作成
+            df = create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_positions, timestamps)
+
+            if df.empty:
+                print(f"Trial {trial_idx}: No data available. Skipping combined data and graph.")
+                return
+
+            # 統合CSVファイルに保存
+            with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # ヘッダー行
+                writer.writerow(['psychopy_time', 'accel_time', 'accel_x', 'accel_y', 'accel_z', 'red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y'])
+
+                # データ行
+                for _, row in df.iterrows():
+                    writer.writerow(row.tolist())
+
+            print(f"統合データファイルを保存しました: {csv_path}")
+
+            # グラフを作成・表示
+            graph_path = os.path.join(log_dir, f'{timestamp}_accel_log_serial_trial_{trial_idx}.png')
+            create_and_show_acceleration_graph(df, trial_idx, graph_path, 'Serial')
+        else:
+            print("統合データファイル出力はOFFに設定されています")
+
+        print(f"データポイント数: {len(accel_data)}")
+
+    except Exception as e:
+        print(f"データ保存・グラフ作成エラー: {e}")
 
 def save_serial_acceleration_data(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
     """シリアル経由で受信した加速度データをCSVファイルに保存（ドット位置データ付き）"""
@@ -1016,6 +1100,13 @@ if AUDIO_SOURCE_MODE == 'mp3':
         print("  → 不足ファイルがある場合、シミュレーション音響にフォールバック")
 else:
     print(f"- パンニングモード: {PANNING_MODE}")
+
+# データ保存設定の表示
+print(f"\nデータ保存設定:")
+print(f"- 加速度センサデータ: 個別ファイルに保存 (accel_sensor_trial_N.csv)")
+print(f"- ランダムドットデータ: 個別ファイルに保存 (random_dot_trial_N.csv)")
+print(f"- 統合データファイル: {'有効' if SAVE_COMBINED_DATA else '無効'}")
+print(f"- 最大試行回数: {MAX_TRIALS}")
 print()
 
 experiment_running = True
@@ -1024,7 +1115,8 @@ response_mapping = {'r': 'red', 'g': 'green'}
 stereo_snd = None
 
 try:
-    while experiment_running:
+    while experiment_running and trial_idx <= MAX_TRIALS:
+        print(f"\n=== 試行 {trial_idx}/{MAX_TRIALS} 開始 ===")
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
 
@@ -1271,8 +1363,18 @@ try:
             # 次の試行のためにバッファをクリア
             serial_comm.get_accel_data()
 
+        # 試行インデックスを増加
+        trial_idx += 1
+        
+        # 最大試行回数に達した場合は実験終了
+        if trial_idx > MAX_TRIALS:
+            print(f"\n最大試行回数 {MAX_TRIALS} に達しました。実験を終了します。")
+            experiment_running = False
+            break
+
         # ESCキーが押された場合は実験終了
         if not experiment_running:
+            print("\nESCキーが押されました。実験を終了します。")
             break
 
         # ----- ITI -----
@@ -1286,8 +1388,6 @@ try:
                 break
             core.wait(0.01)
         if not experiment_running: break
-
-        trial_idx += 1
 
 except Exception as e:
     print(f"エラーが発生しました: {e}")

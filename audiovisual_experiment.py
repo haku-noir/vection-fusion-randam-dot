@@ -60,7 +60,7 @@ SERIAL_BAUDRATE = 115200 # M5Stackのボーレート
 # シリアル通信を使用する場合：
 #   COMMUNICATION_MODE = 'SERIAL'
 #   M5Stack側でも COMMUNICATION_MODE = SERIAL_MODE に設定
-COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
+COMMUNICATION_MODE = 'WIFI'  # 'WIFI' または 'SERIAL'
 
 # GVS（前庭電気刺激）設定
 USE_GVS = True               # GVS刺激を使用するかどうか
@@ -1161,7 +1161,7 @@ try:
         stimulus_start_time = datetime.now()
         stimulus_start_timestamp = stimulus_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         stimulus_start_time_str = stimulus_start_time.strftime('%H:%M:%S.%f')[:-3]
-        
+
         # 最初の試行でファイル名用のタイムスタンプを設定（全試行で同じタイムスタンプを使用）
         if trial_idx == 1:
             file_timestamp = stimulus_start_time.strftime('%Y%m%d_%H%M%S')
@@ -1203,6 +1203,10 @@ try:
         trial_clock = core.Clock()
         stereo_snd.play()
         trial_clock.reset()
+
+        # 描画順序の初期設定（初回のみランダム決定）
+        frame_count = 0
+        red_first = random.random() < 0.5  # True: 赤先, False: 緑先
 
         while trial_clock.getTime() < TRIAL_DURATION:
             keys = event.getKeys(keyList=['r', 'g', 'escape'], timeStamped=trial_clock)
@@ -1267,8 +1271,17 @@ try:
             green_dot_positions.append(green_mean_xy.tolist())
             timestamps.append(now)
 
-            red_dots.draw()
-            green_dots.draw()
+            # フレーム毎に交互に描画順を変更
+            if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
+                # 赤ドットを先に描画
+                red_dots.draw()
+                green_dots.draw()
+            else:
+                # 緑ドットを先に描画
+                green_dots.draw()
+                red_dots.draw()
+
+            frame_count += 1
 
             # 中心線を描画（オプション）
             if USE_CENTER_LINES:

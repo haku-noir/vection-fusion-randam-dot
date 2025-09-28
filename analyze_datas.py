@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
-from scipy.signal import butter, filtfilt, decimate
+from scipy.signal import butter, filtfilt, decimate, resample
 from scipy.fft import rfft, rfftfreq, next_fast_len
+from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
@@ -288,7 +289,13 @@ def find_target_csv_files(input_path, file_pattern=None):
 
 def merge_experiment_data(dataframes, folder_type):
     """
-    実験データを統合して一つのデータフレームを作成する
+    実験データをリサンプリングして統合し、一つのデータフレームを作成する
+
+    リサンプリング処理の詳細解説:
+    1. 目標サンプリングレート: 60Hz (視覚刺激の最低レート)
+    2. アンチエイリアシングフィルタ: ダウンサンプリング前に24Hzローパスフィルタ適用
+    3. 補間方法: 3次スプライン補間で滑らかなデータを生成
+    4. 時間軸統一: 全データを視覚刺激のpsychopy_timeに合わせる
 
     Args:
         dataframes (dict): 読み込まれたデータフレーム辞書
@@ -304,7 +311,7 @@ def merge_experiment_data(dataframes, folder_type):
     accel_df = dataframes['accel_sensor'].copy()
     dot_df = dataframes['random_dot'].copy()
 
-    print(f"\nデータ統合処理開始:")
+    print(f"\nリサンプリング統合処理開始:")
     print(f"  - 加速度データ: {len(accel_df)} samples")
     print(f"  - ランダムドットデータ: {len(dot_df)} samples")
 
@@ -312,101 +319,210 @@ def merge_experiment_data(dataframes, folder_type):
     if 'accel_time' in accel_df.columns:
         accel_df['psychopy_time'] = accel_df['accel_time']
 
-    # 角度変化を計算（オイラー角：ロール、ピッチ、ヨー）
-    if 'accel_x' in accel_df.columns and 'accel_y' in accel_df.columns and 'accel_z' in accel_df.columns:
-        # オイラー角を計算
+    # 目標サンプリングレートを60Hzに設定（視覚刺激の標準レート）
+    TARGET_FS = 60.0  # Hz
+    TARGET_NYQUIST = TARGET_FS / 2.0  # 30Hz
+    ANTI_ALIAS_CUTOFF = TARGET_NYQUIST * 0.8  # 24Hz（安全マージン20%）
+
+    print(f"  - 目標サンプリングレート: {TARGET_FS}Hz")
+    print(f"  - ナイキスト周波数: {TARGET_NYQUIST}Hz")
+    print(f"  - アンチエイリアシングカットオフ: {ANTI_ALIAS_CUTOFF}Hz")
+
+    # 視覚刺激データ（ベースとなる時間軸）の準備
+    dot_df_sorted = dot_df.sort_values('psychopy_time').reset_index(drop=True)
+
+    # 統一時間軸の作成（視覚刺激の範囲で60Hz）
+    time_start = dot_df_sorted['psychopy_time'].min()
+    time_end = dot_df_sorted['psychopy_time'].max()
+    target_time = np.arange(time_start, time_end, 1.0/TARGET_FS)
+
+    print(f"  - 統一時間軸: {time_start:.3f}s ~ {time_end:.3f}s ({len(target_time)} samples)")
+
+    # リサンプリング関数
+    def resample_data_with_antialiasing(data_df, time_col, target_time_axis, original_fs_est):
+        """
+        データをリサンプリングする（アンチエイリアシングフィルタ適用）
+        """
+        # データをソートし、重複を削除
+        df_clean = data_df.sort_values(time_col).drop_duplicates(subset=[time_col]).reset_index(drop=True)
+
+        # 元のサンプリング周波数が目標周波数より高い場合のみアンチエイリアシングフィルタを適用
+        resampled_data = {}
+
+        for col in df_clean.columns:
+            if col == time_col:
+                continue
+
+            # 数値データのみを処理
+            if pd.api.types.is_numeric_dtype(df_clean[col]):
+                values = df_clean[col].values
+                time_values = df_clean[time_col].values
+
+                # NaNを除去
+                valid_mask = ~np.isnan(values)
+                if not np.any(valid_mask):
+                    resampled_data[col] = np.zeros(len(target_time_axis))
+                    continue
+
+                values_clean = values[valid_mask]
+                time_clean = time_values[valid_mask]
+
+                # アンチエイリアシングフィルタの適用（元のFsが高い場合のみ）
+                if original_fs_est > TARGET_FS * 1.2:  # 20%のマージンを持って判定
+                    try:
+                        # バターワースローパスフィルタ（4次、カットオフ24Hz）
+                        nyquist = original_fs_est / 2.0
+                        normalized_cutoff = ANTI_ALIAS_CUTOFF / nyquist
+                        if normalized_cutoff < 1.0:  # ナイキスト周波数内の場合のみ適用
+                            b, a = butter(4, normalized_cutoff, btype='low')
+                            values_filtered = filtfilt(b, a, values_clean)
+                            print(f"      {col}: アンチエイリアシングフィルタ適用 ({original_fs_est:.1f}Hz→{TARGET_FS}Hz)")
+                        else:
+                            values_filtered = values_clean
+                    except Exception as e:
+                        print(f"      {col}: フィルタ適用エラー - {e}")
+                        values_filtered = values_clean
+                else:
+                    values_filtered = values_clean
+
+                # 3次スプライン補間でリサンプリング
+                try:
+                    if len(time_clean) > 3:  # スプライン補間には最低4点必要
+                        interp_func = interp1d(time_clean, values_filtered, 
+                                             kind='cubic', bounds_error=False, 
+                                             fill_value='extrapolate')
+                    else:
+                        interp_func = interp1d(time_clean, values_filtered, 
+                                             kind='linear', bounds_error=False, 
+                                             fill_value='extrapolate')
+
+                    resampled_values = interp_func(target_time_axis)
+                    resampled_data[col] = resampled_values
+
+                except Exception as e:
+                    print(f"      {col}: 補間エラー - {e}")
+                    # フォールバック: 最近隣補間
+                    resampled_values = np.interp(target_time_axis, time_clean, values_filtered)
+                    resampled_data[col] = resampled_values
+            else:
+                # 非数値データは最近隣で補間
+                resampled_data[col] = np.full(len(target_time_axis), df_clean[col].iloc[0])
+
+        return resampled_data
+
+    # 加速度データのリサンプリング
+    accel_df_sorted = accel_df.sort_values('psychopy_time').reset_index(drop=True)
+    accel_fs_est = len(accel_df) / (accel_df['psychopy_time'].max() - accel_df['psychopy_time'].min())
+    print(f"\n  加速度データのリサンプリング (推定Fs: {accel_fs_est:.1f}Hz):")
+
+    resampled_accel = resample_data_with_antialiasing(
+        accel_df_sorted, 'psychopy_time', target_time, accel_fs_est
+    )
+
+    # 視覚刺激データのリサンプリング（既に60Hz程度のはず）
+    dot_fs_est = len(dot_df) / (dot_df['psychopy_time'].max() - dot_df['psychopy_time'].min())
+    print(f"\n  視覚刺激データのリサンプリング (推定Fs: {dot_fs_est:.1f}Hz):")
+
+    resampled_dot = resample_data_with_antialiasing(
+        dot_df_sorted, 'psychopy_time', target_time, dot_fs_est
+    )
+
+    # 統合データフレームの作成
+    merged_df = pd.DataFrame({'psychopy_time': target_time})
+
+    # リサンプリングされた加速度データを追加
+    for col, values in resampled_accel.items():
+        merged_df[col] = values
+
+    # リサンプリングされた視覚刺激データを追加
+    for col, values in resampled_dot.items():
+        if col not in merged_df.columns:  # psychopy_timeは重複回避
+            merged_df[col] = values
+
+    # オイラー角の計算（リサンプリング後のデータで）
+    if 'accel_x' in merged_df.columns and 'accel_y' in merged_df.columns and 'accel_z' in merged_df.columns:
+        print(f"\n  オイラー角計算 (リサンプリング後):")
+
         # ロール（Z軸回りの左右傾斜）: arctan2(accel_y, accel_z)
-        accel_df['roll'] = np.arctan2(accel_df['accel_y'], accel_df['accel_z']) * 180 / np.pi
+        merged_df['roll'] = np.arctan2(merged_df['accel_y'], merged_df['accel_z']) * 180 / np.pi
 
         # ピッチ（Y軸回りの前後傾斜）: arctan2(-accel_x, sqrt(accel_y^2 + accel_z^2))
-        accel_df['pitch'] = np.arctan2(-accel_df['accel_x'], 
-                                       np.sqrt(accel_df['accel_y']**2 + accel_df['accel_z']**2)) * 180 / np.pi
-
-        # ヨー（X軸回りの左右回転）は磁力計が必要なため、加速度のみでは精度が低い
-        # ここでは簡易的にロールをメインの角度変化として使用
+        merged_df['pitch'] = np.arctan2(-merged_df['accel_x'], 
+                                       np.sqrt(merged_df['accel_y']**2 + merged_df['accel_z']**2)) * 180 / np.pi
 
         # 初期位置からの変化量を計算
-        initial_roll = accel_df['roll'].iloc[0]
-        initial_pitch = accel_df['pitch'].iloc[0]
+        initial_roll = merged_df['roll'].iloc[0]
+        initial_pitch = merged_df['pitch'].iloc[0]
 
-        accel_df['roll_change'] = accel_df['roll'] - initial_roll
-        accel_df['pitch_change'] = accel_df['pitch'] - initial_pitch
+        merged_df['roll_change'] = merged_df['roll'] - initial_roll
+        merged_df['pitch_change'] = merged_df['pitch'] - initial_pitch
 
-        # メインの角度変化としてロールを使用（左右傾斜が主な動きのことが多い）
-        accel_df['angle_change'] = accel_df['roll_change']
+        # メインの角度変化としてロールを使用
+        merged_df['angle_change'] = merged_df['roll_change']
 
-        print(f"  - オイラー角を計算:")
-        print(f"    ロール平均: {accel_df['roll'].mean():.3f}°")
-        print(f"    ピッチ平均: {accel_df['pitch'].mean():.3f}°")
-        print(f"    ロール変化範囲: {accel_df['roll_change'].min():.3f}° ~ {accel_df['roll_change'].max():.3f}°")
+        print(f"    ロール平均: {merged_df['roll'].mean():.3f}°")
+        print(f"    ピッチ平均: {merged_df['pitch'].mean():.3f}°")
+        print(f"    ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
 
-    # ドットデータの変化量を計算
-    if 'red_dot_mean_x' in dot_df.columns and 'green_dot_mean_x' in dot_df.columns:
-        dot_df['red_dot_x_change'] = dot_df['red_dot_mean_x'] - dot_df['red_dot_mean_x'].iloc[0]
-        dot_df['green_dot_x_change'] = dot_df['green_dot_mean_x'] - dot_df['green_dot_mean_x'].iloc[0]
-        print(f"  - ドットX座標変化量を計算")
+    # ドットデータの変化量を計算（リサンプリング後）
+    if 'red_dot_mean_x' in merged_df.columns and 'green_dot_mean_x' in merged_df.columns:
+        merged_df['red_dot_x_change'] = merged_df['red_dot_mean_x'] - merged_df['red_dot_mean_x'].iloc[0]
+        merged_df['green_dot_x_change'] = merged_df['green_dot_mean_x'] - merged_df['green_dot_mean_x'].iloc[0]
+        print(f"    ドットX座標変化量を計算")
 
-    # 時間ベースでデータを結合
-    # psychopy_timeをキーにして最近隣マッチング
-    merged_data = []
-
-    for _, accel_row in accel_df.iterrows():
-        accel_time = accel_row['psychopy_time']
-
-        # 最近隣のpsychopy_timeを探す
-        closest_idx = (dot_df['psychopy_time'] - accel_time).abs().idxmin()
-        closest_dot_row = dot_df.loc[closest_idx]
-
-        # データを結合
-        merged_row = {
-            'psychopy_time': accel_time,
-            'accel_x': accel_row['accel_x'],
-            'accel_y': accel_row['accel_y'],
-            'accel_z': accel_row['accel_z'],
-            'angle_change': accel_row.get('angle_change', 0),
-            'red_dot_mean_x': closest_dot_row['red_dot_mean_x'],
-            'red_dot_mean_y': closest_dot_row['red_dot_mean_y'],
-            'green_dot_mean_x': closest_dot_row['green_dot_mean_x'],
-            'green_dot_mean_y': closest_dot_row['green_dot_mean_y'],
-            'red_dot_x_change': closest_dot_row.get('red_dot_x_change', 0),
-            'green_dot_x_change': closest_dot_row.get('green_dot_x_change', 0),
-        }
-
-        merged_data.append(merged_row)
-
-    merged_df = pd.DataFrame(merged_data)
-
-    # 追加データの統合
+    # 追加データのリサンプリング統合
     if folder_type == 'gvs' and 'dac_output' in dataframes:
         dac_df = dataframes['dac_output']
-        print(f"  - DACデータを統合: {len(dac_df)} samples")
+        print(f"\n  GVS(DAC)データのリサンプリング (samples: {len(dac_df)}):")
 
-        # DACデータを時間ベースでマッチング
         if 'time_sec' in dac_df.columns:
-            for i, row in merged_df.iterrows():
-                closest_dac_idx = (dac_df['time_sec'] - row['psychopy_time']).abs().idxmin()
-                closest_dac_row = dac_df.loc[closest_dac_idx]
+            # DACデータの推定サンプリング周波数
+            dac_fs_est = len(dac_df) / (dac_df['time_sec'].max() - dac_df['time_sec'].min())
+            print(f"    推定Fs: {dac_fs_est:.1f}Hz")
 
-                merged_df.at[i, 'dac25_output'] = closest_dac_row.get('dac25_output', 0)
-                merged_df.at[i, 'dac26_output'] = closest_dac_row.get('dac26_output', 0)
-                merged_df.at[i, 'sine_value_internal'] = closest_dac_row.get('sine_value_internal', 0)
+            # DACデータをリサンプリング
+            resampled_dac = resample_data_with_antialiasing(
+                dac_df, 'time_sec', target_time, dac_fs_est
+            )
+
+            # DACデータを統合
+            for col, values in resampled_dac.items():
+                if col != 'time_sec':
+                    merged_df[col] = values
+        else:
+            print(f"    警告: 'time_sec'列が見つかりません")
 
     elif folder_type == 'audio' and 'audio' in dataframes:
         audio_df = dataframes['audio']
-        print(f"  - 音響データを統合: {len(audio_df)} samples")
+        print(f"\n  音響データのリサンプリング (samples: {len(audio_df)}):")
 
-        # 音響データを時間ベースでマッチング
         if 'Time_s' in audio_df.columns:
-            for i, row in merged_df.iterrows():
-                closest_audio_idx = (audio_df['Time_s'] - row['psychopy_time']).abs().idxmin()
-                closest_audio_row = audio_df.loc[closest_audio_idx]
+            # 音響データの推定サンプリング周波数
+            audio_fs_est = len(audio_df) / (audio_df['Time_s'].max() - audio_df['Time_s'].min())
+            print(f"    推定Fs: {audio_fs_est:.1f}Hz")
 
-                merged_df.at[i, 'audio_amplitude_l'] = closest_audio_row.get('Amplitude_L', 0)
-                merged_df.at[i, 'audio_amplitude_r'] = closest_audio_row.get('Amplitude_R', 0)
+            # 音響データをリサンプリング
+            resampled_audio = resample_data_with_antialiasing(
+                audio_df, 'Time_s', target_time, audio_fs_est
+            )
+
+            # 音響データを統合（列名をマッピング）
+            for col, values in resampled_audio.items():
+                if col == 'Amplitude_L':
+                    merged_df['audio_amplitude_l'] = values
+                elif col == 'Amplitude_R':
+                    merged_df['audio_amplitude_r'] = values
+                elif col not in ['Time_s']:
+                    merged_df[col] = values
         else:
-            print(f"  - 音響データに'Time_s'列が見つかりません")
+            print(f"    警告: 'Time_s'列が見つかりません")
 
-    print(f"\n統合結果: {len(merged_df)} samples")
+    print(f"\nリサンプリング統合結果:")
+    print(f"  - 最終データサンプル数: {len(merged_df)}")
+    print(f"  - サンプリングレート: {TARGET_FS}Hz")
+    print(f"  - 時間範囲: {merged_df['psychopy_time'].min():.3f}s ~ {merged_df['psychopy_time'].max():.3f}s")
+    print(f"  - 列数: {len(merged_df.columns)}")
+
     return merged_df
 
 def plot_integrated_data(df, session_id, folder_path, folder_type):

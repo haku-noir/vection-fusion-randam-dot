@@ -392,8 +392,19 @@ def merge_experiment_data(dataframes, folder_type):
                 merged_df.at[i, 'sine_value_internal'] = closest_dac_row.get('sine_value_internal', 0)
 
     elif folder_type == 'audio' and 'audio' in dataframes:
-        # オーディオデータは形式が特殊なので、ここではスキップ
-        print(f"  - オーディオデータはスキップ（特殊形式）")
+        audio_df = dataframes['audio']
+        print(f"  - 音響データを統合: {len(audio_df)} samples")
+
+        # 音響データを時間ベースでマッチング
+        if 'Time_s' in audio_df.columns:
+            for i, row in merged_df.iterrows():
+                closest_audio_idx = (audio_df['Time_s'] - row['psychopy_time']).abs().idxmin()
+                closest_audio_row = audio_df.loc[closest_audio_idx]
+
+                merged_df.at[i, 'audio_amplitude_l'] = closest_audio_row.get('Amplitude_L', 0)
+                merged_df.at[i, 'audio_amplitude_r'] = closest_audio_row.get('Amplitude_R', 0)
+        else:
+            print(f"  - 音響データに'Time_s'列が見つかりません")
 
     print(f"\n統合結果: {len(merged_df)} samples")
     return merged_df
@@ -414,8 +425,20 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
 
     plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
 
-    # 4つのサブプロットを作成
-    fig, axes = plt.subplots(4, 1, figsize=(15, 16))
+    # フォルダタイプに応じてサブプロット数を決定
+    is_visual_only = folder_type not in ['gvs', 'audio'] or (
+        folder_type == 'gvs' and 'dac25_output' not in df.columns
+    ) or (
+        folder_type == 'audio' and 'audio_amplitude_l' not in df.columns and 'audio_amplitude_r' not in df.columns
+    )
+
+    subplot_count = 2 if is_visual_only else 3
+    fig, axes = plt.subplots(subplot_count, 1, figsize=(15, 8 if is_visual_only else 12))
+
+    # axesを常にリストとして扱う
+    if subplot_count == 2:
+        axes = list(axes)
+
     fig.suptitle(f'統合データ解析 - {folder_type.upper()} Session: {session_id}', fontsize=16)
 
     # サブプロット1: 加速度データ
@@ -427,84 +450,102 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
-    # サブプロット2: オイラー角（ロール、ピッチ）
-    if 'roll' in df.columns and 'pitch' in df.columns:
-        axes[1].plot(df['psychopy_time'], df['roll_change'], color='blue', linewidth=1.5, label='ロール変化（左右傾斜）')
-        axes[1].plot(df['psychopy_time'], df['pitch_change'], color='red', linewidth=1.5, label='ピッチ変化（前後傾斜）', alpha=0.7)
-        axes[1].axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        axes[1].set_title('オイラー角変化（初期位置からの変化）')
-        axes[1].set_ylabel('角度変化 (度)')
-        axes[1].legend()
-        axes[1].grid(True, alpha=0.3)
 
-    # サブプロット3: 視覚刺激（ドット位置）と角度変化の重ね合わせ
+    # サブプロット2: 視覚刺激（ドット位置）と角度変化の重ね合わせ
     if 'red_dot_mean_x' in df.columns and 'green_dot_mean_x' in df.columns and 'angle_change' in df.columns:
-        ax3_1 = axes[2]
+        ax2_1 = axes[1]
         # ドット位置（左軸）
-        line1 = ax3_1.plot(df['psychopy_time'], df['red_dot_mean_x'], color='red', alpha=0.7, label='赤ドットX座標')
-        line2 = ax3_1.plot(df['psychopy_time'], df['green_dot_mean_x'], color='green', alpha=0.7, label='緑ドットX座標')
-        ax3_1.set_ylabel('X座標 (pixel)', color='black')
-        ax3_1.tick_params(axis='y', labelcolor='black')
+        line1 = ax2_1.plot(df['psychopy_time'], df['red_dot_mean_x'], color='red', alpha=0.7, label='赤ドットX座標')
+        line2 = ax2_1.plot(df['psychopy_time'], df['green_dot_mean_x'], color='green', alpha=0.7, label='緑ドットX座標')
+        ax2_1.set_ylabel('X座標 (pixel)', color='black')
+        ax2_1.tick_params(axis='y', labelcolor='black')
 
         # 角度変化（右軸）
-        ax3_2 = ax3_1.twinx()
-        line3 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
-        ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
-        ax3_2.set_ylabel('角度変化 (度)', color='orange')
-        ax3_2.tick_params(axis='y', labelcolor='orange')
+        ax2_2 = ax2_1.twinx()
+        line3 = ax2_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+        ax2_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+        ax2_2.set_ylabel('角度変化 (度)', color='orange')
+        ax2_2.tick_params(axis='y', labelcolor='orange')
 
         # 凡例を結合
         lines = line1 + line2 + line3
         labels = [l.get_label() for l in lines]
-        ax3_1.legend(lines, labels, loc='upper left')
-        ax3_1.set_title('視覚刺激（ドット位置）と角度変化')
-        ax3_1.grid(True, alpha=0.3)
+        ax2_1.legend(lines, labels, loc='upper left')
+        ax2_1.set_title('視覚刺激（ドット位置）と角度変化')
+        ax2_1.grid(True, alpha=0.3)
 
-    # サブプロット4: 刺激データと角度変化の重ね合わせ（フォルダタイプ別）
-    if folder_type == 'gvs' and 'dac25_output' in df.columns and 'angle_change' in df.columns:
-        ax4_1 = axes[3]
-        # DAC出力（左軸）
-        line1 = ax4_1.plot(df['psychopy_time'], df['dac25_output'], color='blue', alpha=0.7, label='DAC25出力')
-        line2 = ax4_1.plot(df['psychopy_time'], df['dac26_output'], color='cyan', alpha=0.7, label='DAC26出力')
-        if 'sine_value_internal' in df.columns:
-            line3 = ax4_1.plot(df['psychopy_time'], df['sine_value_internal'], color='purple', alpha=0.5, label='内部sin値')
-        ax4_1.set_ylabel('DAC出力値', color='blue')
-        ax4_1.tick_params(axis='y', labelcolor='blue')
+        # 視覚刺激のみの場合はここでX軸ラベルを追加
+        if is_visual_only:
+            ax2_1.set_xlabel('時間 (秒)')
 
-        # 角度変化（右軸）
-        ax4_2 = ax4_1.twinx()
-        line4 = ax4_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
-        ax4_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
-        ax4_2.set_ylabel('角度変化 (度)', color='orange')
-        ax4_2.tick_params(axis='y', labelcolor='orange')
+    # サブプロット3: 刺激データと角度変化の重ね合わせ（視覚刺激のみでない場合のみ）
+    if not is_visual_only:
+        if folder_type == 'gvs' and 'dac25_output' in df.columns and 'angle_change' in df.columns:
+            ax3_1 = axes[2]
+            # DAC出力（左軸）- PIN25: +方向、PIN26: -方向
+            line1 = ax3_1.plot(df['psychopy_time'], df['dac25_output'], color='blue', alpha=0.7, label='PIN25出力(+方向)')
+            line2 = ax3_1.plot(df['psychopy_time'], -df['dac26_output'], color='cyan', alpha=0.7, label='PIN26出力(-方向)')
+            if 'sine_value_internal' in df.columns:
+                line3 = ax3_1.plot(df['psychopy_time'], df['sine_value_internal'], color='purple', alpha=0.5, label='内部sin値')
+            ax3_1.set_ylabel('GVS出力値 (PIN25: +, PIN26: -)', color='blue')
+            ax3_1.tick_params(axis='y', labelcolor='blue')
 
-        # 凡例を結合
-        all_lines = line1 + line2 + (['sine_value_internal' in df.columns and line3] or []) + line4
-        all_lines = [l for l in all_lines if l]  # Noneを除去
-        labels = [l.get_label() for l in all_lines]
-        ax4_1.legend(all_lines, labels, loc='upper left')
-        ax4_1.set_title('GVS刺激と角度変化の重ね合わせ')
+            # 角度変化（右軸）
+            ax3_2 = ax3_1.twinx()
+            line4 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+            ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+            ax3_2.set_ylabel('角度変化 (度)', color='orange')
+            ax3_2.tick_params(axis='y', labelcolor='orange')
 
-    elif folder_type == 'audio' and 'angle_change' in df.columns:
-        # オーディオデータの表示は実装が複雑なため、角度変化のみ表示
-        axes[3].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='ロール変化')
-        axes[3].axhline(y=0, color='black', linestyle='--', alpha=0.5)
-        axes[3].set_title('オーディオ刺激と角度変化\n（オーディオデータ表示未実装）')
-        axes[3].set_ylabel('角度変化 (度)')
-        axes[3].legend()
-    else:
-        # 視覚刺激のみの場合
-        if 'angle_change' in df.columns:
-            axes[3].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='ロール変化')
-            axes[3].axhline(y=0, color='black', linestyle='--', alpha=0.5)
-            axes[3].set_ylabel('角度変化 (度)')
-            axes[3].legend()
-        else:
-            axes[3].text(0.5, 0.5, '角度データなし', ha='center', va='center', transform=axes[3].transAxes)
-        axes[3].set_title('視覚刺激のみ')
+            # 凡例を結合（sine_value_internalがある場合のみline3を追加）
+            all_lines = line1 + line2 + line4
+            if 'sine_value_internal' in df.columns:
+                all_lines = line1 + line2 + line3 + line4
 
-    axes[3].set_xlabel('時間 (秒)')
-    axes[3].grid(True, alpha=0.3)
+            labels = [l.get_label() for l in all_lines]
+            ax3_1.legend(all_lines, labels, loc='upper left')
+            ax3_1.set_title('GVS刺激と角度変化の重ね合わせ')
+
+        elif folder_type == 'audio' and 'angle_change' in df.columns:
+            ax3_1 = axes[2]
+
+            # 音響データがある場合はプロットする
+            if 'audio_amplitude_l' in df.columns or 'audio_amplitude_r' in df.columns:
+                # 音響振幅（左軸）
+                lines_audio = []
+                if 'audio_amplitude_l' in df.columns:
+                    line1 = ax3_1.plot(df['psychopy_time'], df['audio_amplitude_l'], color='blue', alpha=0.6, label='音響振幅L')
+                    lines_audio.extend(line1)
+                if 'audio_amplitude_r' in df.columns:
+                    line2 = ax3_1.plot(df['psychopy_time'], df['audio_amplitude_r'], color='cyan', alpha=0.6, label='音響振幅R')
+                    lines_audio.extend(line2)
+
+                ax3_1.set_ylabel('音響振幅', color='blue')
+                ax3_1.tick_params(axis='y', labelcolor='blue')
+
+                # 角度変化（右軸）
+                ax3_2 = ax3_1.twinx()
+                line_angle = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+                ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+                ax3_2.set_ylabel('角度変化 (度)', color='orange')
+                ax3_2.tick_params(axis='y', labelcolor='orange')
+
+                # 凡例を結合
+                all_lines = lines_audio + line_angle
+                labels = [l.get_label() for l in all_lines]
+                ax3_1.legend(all_lines, labels, loc='upper left')
+                ax3_1.set_title('音響刺激と角度変化の重ね合わせ')
+            else:
+                # 音響データがない場合は角度変化のみ
+                axes[2].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='ロール変化')
+                axes[2].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+                axes[2].set_title('音響刺激と角度変化\n（音響データなし）')
+                axes[2].set_ylabel('角度変化 (度)')
+                axes[2].legend()
+
+        # 3番目のサブプロットがある場合のX軸ラベル設定
+        axes[2].set_xlabel('時間 (秒)')
+        axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
 

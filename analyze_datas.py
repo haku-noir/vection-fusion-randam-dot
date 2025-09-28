@@ -312,27 +312,33 @@ def merge_experiment_data(dataframes, folder_type):
     if 'accel_time' in accel_df.columns:
         accel_df['psychopy_time'] = accel_df['accel_time']
 
-    # 角度変化を計算
+    # 角度変化を計算（オイラー角：ロール、ピッチ、ヨー）
     if 'accel_x' in accel_df.columns and 'accel_y' in accel_df.columns and 'accel_z' in accel_df.columns:
-        # 重力ベクトルの推定（平均を使用）
-        gravity_x = accel_df['accel_x'].mean()
-        gravity_y = accel_df['accel_y'].mean()
-        gravity_z = accel_df['accel_z'].mean()
-        gravity_vector = np.array([gravity_x, gravity_y, gravity_z])
+        # オイラー角を計算
+        # ロール（Z軸回りの左右傾斜）: arctan2(accel_y, accel_z)
+        accel_df['roll'] = np.arctan2(accel_df['accel_y'], accel_df['accel_z']) * 180 / np.pi
 
-        # 初期位置からの角度変化を計算
-        angles = []
-        for _, row in accel_df.iterrows():
-            current_vector = np.array([row['accel_x'], row['accel_y'], row['accel_z']])
-            # ベクトル間の角度を計算
-            cos_angle = np.dot(current_vector, gravity_vector) / (np.linalg.norm(current_vector) * np.linalg.norm(gravity_vector))
-            cos_angle = np.clip(cos_angle, -1.0, 1.0)  # 数値誤差を防ぐ
-            angle_rad = np.arccos(cos_angle)
-            angle_deg = np.degrees(angle_rad)
-            angles.append(angle_deg)
+        # ピッチ（Y軸回りの前後傾斜）: arctan2(-accel_x, sqrt(accel_y^2 + accel_z^2))
+        accel_df['pitch'] = np.arctan2(-accel_df['accel_x'], 
+                                       np.sqrt(accel_df['accel_y']**2 + accel_df['accel_z']**2)) * 180 / np.pi
 
-        accel_df['angle_change'] = angles
-        print(f"  - 角度変化を計算: 平均 {np.mean(angles):.3f}°")
+        # ヨー（X軸回りの左右回転）は磁力計が必要なため、加速度のみでは精度が低い
+        # ここでは簡易的にロールをメインの角度変化として使用
+
+        # 初期位置からの変化量を計算
+        initial_roll = accel_df['roll'].iloc[0]
+        initial_pitch = accel_df['pitch'].iloc[0]
+
+        accel_df['roll_change'] = accel_df['roll'] - initial_roll
+        accel_df['pitch_change'] = accel_df['pitch'] - initial_pitch
+
+        # メインの角度変化としてロールを使用（左右傾斜が主な動きのことが多い）
+        accel_df['angle_change'] = accel_df['roll_change']
+
+        print(f"  - オイラー角を計算:")
+        print(f"    ロール平均: {accel_df['roll'].mean():.3f}°")
+        print(f"    ピッチ平均: {accel_df['pitch'].mean():.3f}°")
+        print(f"    ロール変化範囲: {accel_df['roll_change'].min():.3f}° ~ {accel_df['roll_change'].max():.3f}°")
 
     # ドットデータの変化量を計算
     if 'red_dot_mean_x' in dot_df.columns and 'green_dot_mean_x' in dot_df.columns:
@@ -421,39 +427,81 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
-    # サブプロット2: 角度変化
-    if 'angle_change' in df.columns:
-        axes[1].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=1.5, label='角度変化')
+    # サブプロット2: オイラー角（ロール、ピッチ）
+    if 'roll' in df.columns and 'pitch' in df.columns:
+        axes[1].plot(df['psychopy_time'], df['roll_change'], color='blue', linewidth=1.5, label='ロール変化（左右傾斜）')
+        axes[1].plot(df['psychopy_time'], df['pitch_change'], color='red', linewidth=1.5, label='ピッチ変化（前後傾斜）', alpha=0.7)
         axes[1].axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        axes[1].set_title('角度変化')
+        axes[1].set_title('オイラー角変化（初期位置からの変化）')
         axes[1].set_ylabel('角度変化 (度)')
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
 
-    # サブプロット3: ランダムドットの位置
-    if 'red_dot_mean_x' in df.columns and 'green_dot_mean_x' in df.columns:
-        axes[2].plot(df['psychopy_time'], df['red_dot_mean_x'], color='red', alpha=0.7, label='赤ドットX座標')
-        axes[2].plot(df['psychopy_time'], df['green_dot_mean_x'], color='green', alpha=0.7, label='緑ドットX座標')
-        axes[2].set_title('ランダムドットの位置')
-        axes[2].set_ylabel('X座標 (pixel)')
-        axes[2].legend()
-        axes[2].grid(True, alpha=0.3)
+    # サブプロット3: 視覚刺激（ドット位置）と角度変化の重ね合わせ
+    if 'red_dot_mean_x' in df.columns and 'green_dot_mean_x' in df.columns and 'angle_change' in df.columns:
+        ax3_1 = axes[2]
+        # ドット位置（左軸）
+        line1 = ax3_1.plot(df['psychopy_time'], df['red_dot_mean_x'], color='red', alpha=0.7, label='赤ドットX座標')
+        line2 = ax3_1.plot(df['psychopy_time'], df['green_dot_mean_x'], color='green', alpha=0.7, label='緑ドットX座標')
+        ax3_1.set_ylabel('X座標 (pixel)', color='black')
+        ax3_1.tick_params(axis='y', labelcolor='black')
 
-    # サブプロット4: 刺激データ（フォルダタイプ別）
-    if folder_type == 'gvs' and 'dac25_output' in df.columns:
-        axes[3].plot(df['psychopy_time'], df['dac25_output'], label='DAC25出力', alpha=0.7)
-        axes[3].plot(df['psychopy_time'], df['dac26_output'], label='DAC26出力', alpha=0.7)
+        # 角度変化（右軸）
+        ax3_2 = ax3_1.twinx()
+        line3 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+        ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+        ax3_2.set_ylabel('角度変化 (度)', color='orange')
+        ax3_2.tick_params(axis='y', labelcolor='orange')
+
+        # 凡例を結合
+        lines = line1 + line2 + line3
+        labels = [l.get_label() for l in lines]
+        ax3_1.legend(lines, labels, loc='upper left')
+        ax3_1.set_title('視覚刺激（ドット位置）と角度変化')
+        ax3_1.grid(True, alpha=0.3)
+
+    # サブプロット4: 刺激データと角度変化の重ね合わせ（フォルダタイプ別）
+    if folder_type == 'gvs' and 'dac25_output' in df.columns and 'angle_change' in df.columns:
+        ax4_1 = axes[3]
+        # DAC出力（左軸）
+        line1 = ax4_1.plot(df['psychopy_time'], df['dac25_output'], color='blue', alpha=0.7, label='DAC25出力')
+        line2 = ax4_1.plot(df['psychopy_time'], df['dac26_output'], color='cyan', alpha=0.7, label='DAC26出力')
         if 'sine_value_internal' in df.columns:
-            axes[3].plot(df['psychopy_time'], df['sine_value_internal'], label='内部sin値', alpha=0.7)
-        axes[3].set_title('GVS刺激データ')
-        axes[3].set_ylabel('出力値')
+            line3 = ax4_1.plot(df['psychopy_time'], df['sine_value_internal'], color='purple', alpha=0.5, label='内部sin値')
+        ax4_1.set_ylabel('DAC出力値', color='blue')
+        ax4_1.tick_params(axis='y', labelcolor='blue')
+
+        # 角度変化（右軸）
+        ax4_2 = ax4_1.twinx()
+        line4 = ax4_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+        ax4_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+        ax4_2.set_ylabel('角度変化 (度)', color='orange')
+        ax4_2.tick_params(axis='y', labelcolor='orange')
+
+        # 凡例を結合
+        all_lines = line1 + line2 + (['sine_value_internal' in df.columns and line3] or []) + line4
+        all_lines = [l for l in all_lines if l]  # Noneを除去
+        labels = [l.get_label() for l in all_lines]
+        ax4_1.legend(all_lines, labels, loc='upper left')
+        ax4_1.set_title('GVS刺激と角度変化の重ね合わせ')
+
+    elif folder_type == 'audio' and 'angle_change' in df.columns:
+        # オーディオデータの表示は実装が複雑なため、角度変化のみ表示
+        axes[3].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='ロール変化')
+        axes[3].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        axes[3].set_title('オーディオ刺激と角度変化\n（オーディオデータ表示未実装）')
+        axes[3].set_ylabel('角度変化 (度)')
         axes[3].legend()
-    elif folder_type == 'audio':
-        axes[3].text(0.5, 0.5, 'オーディオ刺激データ\n(表示未実装)', ha='center', va='center', transform=axes[3].transAxes)
-        axes[3].set_title('オーディオ刺激データ')
     else:
-        axes[3].text(0.5, 0.5, '視覚刺激のみ', ha='center', va='center', transform=axes[3].transAxes)
-        axes[3].set_title('視覚刺激データ')
+        # 視覚刺激のみの場合
+        if 'angle_change' in df.columns:
+            axes[3].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='ロール変化')
+            axes[3].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+            axes[3].set_ylabel('角度変化 (度)')
+            axes[3].legend()
+        else:
+            axes[3].text(0.5, 0.5, '角度データなし', ha='center', va='center', transform=axes[3].transAxes)
+        axes[3].set_title('視覚刺激のみ')
 
     axes[3].set_xlabel('時間 (秒)')
     axes[3].grid(True, alpha=0.3)
@@ -481,9 +529,10 @@ def save_angle_data_to_csv(df, output_file, has_dac_output=False, has_audio=Fals
         has_dac_output (bool): DAC出力データが含まれているかどうか
         has_audio (bool): オーディオデータが含まれているかどうか
     """
-    # 基本的な列
+    # 基本的な列（オイラー角を含む）
     columns_to_save = [
         'psychopy_time', 'accel_x', 'accel_y', 'accel_z', 'angle_change',
+        'roll', 'pitch', 'roll_change', 'pitch_change',
         'red_dot_mean_x', 'red_dot_mean_y', 'green_dot_mean_x', 'green_dot_mean_y',
         'red_dot_x_change', 'green_dot_x_change'
     ]

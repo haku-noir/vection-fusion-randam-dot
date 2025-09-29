@@ -140,6 +140,7 @@ def calculate_windowed_correlation(signal1, signal2, window_sec=10.0, fs=60.0):
 def find_integrated_analysis_files(input_path):
     """
     integrated_analysis.csvファイルを再帰的に検索
+    analyze_datasとanalyze_scope_datasの両方の出力ファイルに対応
 
     Args:
         input_path (str): 検索開始パス
@@ -149,12 +150,20 @@ def find_integrated_analysis_files(input_path):
     """
     analysis_files = []
 
-    if os.path.isfile(input_path) and 'integrated_analysis.csv' in input_path:
+    if os.path.isfile(input_path) and ('integrated_analysis.csv' in input_path or 'integrated_analysis_scope.csv' in input_path):
         return [input_path]
 
-    # 再帰的にintegrated_analysis.csvファイルを検索
-    search_pattern = '**/*integrated_analysis.csv'
-    analysis_files = list(Path(input_path).glob(search_pattern))
+    # 再帰的にintegrated_analysis関連ファイルを検索
+    # analyze_datasの出力: *integrated_analysis.csv
+    # analyze_scope_datasの出力: *integrated_analysis_scope.csv
+    search_patterns = [
+        '**/*integrated_analysis.csv',
+        '**/*integrated_analysis_scope.csv'
+    ]
+    
+    for pattern in search_patterns:
+        files = list(Path(input_path).glob(pattern))
+        analysis_files.extend(files)
 
     return [str(f) for f in sorted(analysis_files)]
 
@@ -357,7 +366,11 @@ def save_sway_data(df, output_path, cutoff_freq=3.0):
     try:
         # ファイル名に周波数情報を含める
         base_name = os.path.splitext(output_path)[0]
-        sway_output_path = f"{base_name}_sway_{cutoff_freq}Hz.csv"
+        # analyze_scope_datasの出力ファイル(_scope.csv)の場合も適切に処理
+        if base_name.endswith('_scope'):
+            sway_output_path = f"{base_name}_sway_{cutoff_freq}Hz.csv"
+        else:
+            sway_output_path = f"{base_name}_sway_{cutoff_freq}Hz.csv"
 
         # 身体動揺関連の列のみを選択
         sway_columns = ['psychopy_time']
@@ -404,7 +417,7 @@ def save_sway_data(df, output_path, cutoff_freq=3.0):
         return None
 
 
-def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0):
+def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is_scope_data=False):
     """
     身体動揺データのグラフを作成
 
@@ -414,6 +427,7 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0):
         folder_path (str): フォルダパス
         folder_type (str): フォルダタイプ
         cutoff_freq (float): 使用したカットオフ周波数
+        is_scope_data (bool): オシロスコープデータかどうか
     """
     if df is None or df.empty:
         print("グラフ作成用のデータがありません")
@@ -444,7 +458,8 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0):
     else:
         axes = list(axes)
 
-    fig.suptitle(f'身体動揺解析 ({cutoff_freq}Hz LPF) - {folder_type.upper()} Session: {session_id}', fontsize=16)
+    data_source = "SCOPE" if is_scope_data else "SYNTH"
+    fig.suptitle(f'身体動揺解析 ({cutoff_freq}Hz LPF) - {folder_type.upper()} Session: {session_id} [{data_source}]', fontsize=16)
 
     # サブプロット1: 加速度データ（身体動揺成分）
     if 'accel_x_sway' in df.columns:
@@ -677,7 +692,8 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0):
 
     # グラフを保存（周波数情報を含む）
     base_name = os.path.splitext(session_id)[0] if '.' in session_id else session_id
-    output_file = os.path.join(folder_path, f"{base_name}_sway_analysis_{cutoff_freq}Hz.png")
+    scope_suffix = "_scope" if is_scope_data else ""
+    output_file = os.path.join(folder_path, f"{base_name}{scope_suffix}_sway_analysis_{cutoff_freq}Hz.png")
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"身体動揺解析グラフを保存: {os.path.basename(output_file)}")
     plt.close()
@@ -688,9 +704,10 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
                                    enable_gvs_sine_internal=True):
     """
     単一のintegrated_analysisファイルを処理
+    analyze_datasとanalyze_scope_datasの両方の出力ファイルに対応
 
     Args:
-        filepath (str): integrated_analysis.csvファイルのパス
+        filepath (str): integrated_analysis.csvまたはintegrated_analysis_scope.csvファイルのパス
         cutoff_freq (float): ローパスフィルタのカットオフ周波数
         enable_audio_0_3hz_filter (bool): audio相関で0.3Hzフィルタを使用するかどうか
         enable_gvs_sine_internal (bool): GVS相関でsine_value_internal_swayを使用するかどうか
@@ -706,12 +723,17 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
     folder_path = os.path.dirname(filepath)
     filename = os.path.basename(filepath)
 
+    # オシロスコープデータかどうかを判定
+    is_scope_data = 'integrated_analysis_scope.csv' in filename
+    data_source = "オシロスコープ実測" if is_scope_data else "合成音響"
+    print(f"データソース: {data_source}")
+
     # セッションIDを抽出（ファイル名から）
     session_match = re.search(r'(\d{8}_\d{6})', filename)
     if session_match:
         session_id = session_match.group(1)
     else:
-        session_id = os.path.splitext(filename)[0].replace('_integrated_analysis', '')
+        session_id = os.path.splitext(filename)[0].replace('_integrated_analysis_scope', '').replace('_integrated_analysis', '')
 
     print(f"セッションID: {session_id}")
     print(f"フォルダ: {folder_path}")
@@ -745,7 +767,7 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
         # グラフを作成・保存
         if sway_file_path:
             print("身体動揺解析グラフを作成中...")
-            plot_sway_data(filtered_df, session_id, folder_path, folder_type, cutoff_freq)
+            plot_sway_data(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data)
 
         return True
     else:
@@ -798,8 +820,8 @@ def main():
     analysis_files = find_integrated_analysis_files(input_path)
 
     if not analysis_files:
-        print("integrated_analysis.csvファイルが見つかりませんでした。")
-        print("まずanalyze_datasを実行して統合解析を行ってください。")
+        print("integrated_analysis.csvまたはintegrated_analysis_scope.csvファイルが見つかりませんでした。")
+        print("まずanalyze_datasまたはanalyze_scope_dataを実行して統合解析を行ってください。")
         return
 
     print(f"見つかったファイル数: {len(analysis_files)}")

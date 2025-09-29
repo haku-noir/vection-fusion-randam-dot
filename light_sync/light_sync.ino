@@ -1,5 +1,3 @@
-#include "BluetoothSerial.h"
-BluetoothSerial SerialBT;
 int INPIN=18;//タイミングを取る指標が出てきたらフォトトラから電圧出力される
 int OUTPIN=19;
 int initflag=1; //1ならば初期状態判定を行う
@@ -15,7 +13,6 @@ void init(){
 }
 void setup() {
   Serial.begin(9600);
-  SerialBT.begin("ESP32_Unity");
   // put your setup code here, to run once:
   pinMode(OUTPIN,OUTPUT);
   pinMode(INPIN,INPUT);
@@ -23,18 +20,21 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(INPIN), getStartTiming, RISING);
   init();
 }
+
 void loop() {
-  // put your main code here, to run repeatedly:
-  //SerialBTを受け取って，init状態であるかを設定すること
- // delay(1000);
-//  init();
-  if(SerialBT.available()){
-    char receivedChar = SerialBT.read();
+  // シリアル入力がある場合
+  if (Serial.available()) {
+    char receivedChar = Serial.read();
     Serial.print("Received: ");
     Serial.println(receivedChar);
-    if(receivedChar ='r'){
-      //reset
+
+    if (receivedChar == 'r') {
+      // reset
       init();
+    } else if (receivedChar == 's') {
+      // s入力で強制的にHIGHにする
+      digitalWrite(OUTPIN, HIGH);
+      Serial.println("OUTPIN set HIGH by 's' command");
     }
   }
 }

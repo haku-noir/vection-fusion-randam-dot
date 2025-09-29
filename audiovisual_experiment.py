@@ -12,6 +12,10 @@ audiovisual_experiment.py
 - 各試行で音と同期するドットの色をランダムに決定。
 """
 
+FORCE_COND = 'red'
+FORCE_COND = 'green'
+FORCE_COND = None
+
 # ------------------------------------------------------------------
 # 0. PTB を最優先でロードするための prefs 設定
 # ------------------------------------------------------------------
@@ -60,7 +64,7 @@ SERIAL_BAUDRATE = 115200 # M5Stackのボーレート
 # シリアル通信を使用する場合：
 #   COMMUNICATION_MODE = 'SERIAL'
 #   M5Stack側でも COMMUNICATION_MODE = SERIAL_MODE に設定
-COMMUNICATION_MODE = 'WIFI'  # 'WIFI' または 'SERIAL'
+COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
 # GVS（前庭電気刺激）設定
 USE_GVS = True               # GVS刺激を使用するかどうか
@@ -944,14 +948,14 @@ def save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps
         print(f"ランダムドットデータ保存エラー: {e}")
         return None
 
-def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir):
+def save_serial_acceleration_data_and_graph(accel_data, red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir, file_timestamp):
     """シリアル経由で受信した加速度データをCSVファイルに保存"""
     try:
         # 加速度センサデータを別ファイルに保存
-        accel_csv_path = save_accelerometer_data_only(accel_data, trial_idx, log_dir)
+        accel_csv_path = save_accelerometer_data_only(accel_data, trial_idx, log_dir, file_timestamp)
 
         # ランダムドットデータを別ファイルに保存（生データ完全保持）
-        dot_csv_path = save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir)
+        dot_csv_path = save_random_dot_data_only(red_dot_positions, green_dot_positions, timestamps, trial_idx, log_dir, file_timestamp)
 
         # 統合データファイル作成（設定でONの場合のみ）
         if SAVE_COMBINED_DATA:
@@ -1129,6 +1133,10 @@ try:
         print(f"\n=== 試行 {trial_idx}/{MAX_TRIALS} 開始 ===")
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
+        if FORCE_COND:
+            cond_type = FORCE_COND
+
+        print(f"\ncond_type: {cond_type}")
 
         # 音響情報の記録用変数
         sync_red = (cond_type == 'red')
@@ -1149,14 +1157,6 @@ try:
         red_base_x, green_base_x = red_current_pos[:, 0].copy(), green_current_pos[:, 0].copy()
         last_t = 0.0
 
-        # 初期位置を保存
-        save_initial_dot_positions(red_current_pos, green_current_pos, trial_idx, LOG_DIR, file_timestamp)
-
-        # ----- サウンド準備 -----
-        if stereo_snd and stereo_snd.status != constants.STOPPED:
-            stereo_snd.stop()
-        stereo_snd = build_audio_source(sync_red, PANNING_MODE)
-
         # ----- 刺激開始時間を記録 -----
         stimulus_start_time = datetime.now()
         stimulus_start_timestamp = stimulus_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -1167,6 +1167,14 @@ try:
             file_timestamp = stimulus_start_time.strftime('%Y%m%d_%H%M%S')
 
         print(f"Trial {trial_idx}: 刺激開始時間 = {stimulus_start_timestamp}")
+
+        # 初期位置を保存
+        save_initial_dot_positions(red_current_pos, green_current_pos, trial_idx, LOG_DIR, file_timestamp)
+
+        # ----- サウンド準備 -----
+        if stereo_snd and stereo_snd.status != constants.STOPPED:
+            stereo_snd.stop()
+        stereo_snd = build_audio_source(sync_red, PANNING_MODE)
 
         # ----- サウンド準備 -----
         if stereo_snd and stereo_snd.status != constants.STOPPED:

@@ -68,8 +68,18 @@ COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
 # GVS（前庭電気刺激）設定
 USE_GVS = True               # GVS刺激を使用するかどうか
-GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポート（適切なポートに変更）
+GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポート
 GVS_BAUDRATE = 115200        # GVSのボーレート
+
+# 光同期用Arduino設定
+USE_LIGHT_SYNC = True        # 光同期機能を使用するかどうか
+LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-7"  # 光同期用Arduinoのシリアルポート
+LIGHT_SYNC_BAUDRATE = 9600   # 光同期用Arduinoのボーレート
+
+# 同期用表示領域設定
+SYNC_SQUARE_SIZE = 25        # 同期用白/黒表示のサイズ [pix]
+SYNC_SQUARE_POS_X = 845      # 同期用表示のX座標（画面右下）
+SYNC_SQUARE_POS_Y = -455     # 同期用表示のY座標（画面右下）
 
 # 音源の情報を保持するクラス
 class SoundSource:
@@ -551,6 +561,66 @@ class GVSController:
             return False
 
 
+# 光同期用Arduino制御クラス
+class LightSyncController:
+    def __init__(self, port, baudrate=9600):
+        self.port = port
+        self.baudrate = baudrate
+        self.serial_connection = None
+        self.connected = False
+
+    def connect(self):
+        """光同期用Arduinoに接続"""
+        try:
+            self.serial_connection = serial.Serial(self.port, self.baudrate, timeout=1)
+            time.sleep(2)  # Arduinoの初期化待機
+            self.connected = True
+            print(f"光同期用Arduinoに接続しました: {self.port}")
+            return True
+        except Exception as e:
+            print(f"光同期用Arduino接続エラー: {e}")
+            self.connected = False
+            return False
+
+    def disconnect(self):
+        """光同期用Arduinoから切断"""
+        if self.serial_connection:
+            try:
+                # 最終停止コマンド送信（readyFlagをfalseに保つ）
+                self.force_stop()
+                time.sleep(0.1)
+                self.serial_connection.close()
+                print("Light Sync Arduinoの接続を切断しました")
+            except Exception as e:
+                print(f"Light Sync Arduino切断エラー: {e}")
+        self.connected = False
+
+    def send_command(self, command):
+        """光同期用Arduinoにコマンド送信"""
+        if not self.connected or not self.serial_connection:
+            return False
+        try:
+            command_str = command + '\n'
+            self.serial_connection.write(command_str.encode())
+            print(f"光同期コマンド送信: {command}")
+            return True
+        except Exception as e:
+            print(f"光同期コマンド送信エラー: {e}")
+            return False
+
+    def ready(self):
+        """刺激準備完了を通知（刺激検出準備状態にセット）"""
+        return self.send_command('r')  # readyコマンド - 刺激検出準備
+
+    def force_stop(self):
+        """刺激強制停止（リセットなし）"""
+        return self.send_command('x')  # 強制停止コマンド
+
+    def force_high(self):
+        """強制的にHIGHに設定（テスト用）"""
+        return self.send_command('s')
+
+
 # ------------------------------------------------------------------
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
@@ -566,6 +636,20 @@ def create_beep_sound(freq, duration, volume=0.5, sample_rate=44100):
 win = visual.Window(size=WIN_SIZE, color=[0, 0, 0], units='pix',
                     fullscr=False, allowGUI=True) # フルスクリーンに変更
 
+# 初期画面で光センサーが反応しないよう、すぐに黒い同期正方形を描画
+if USE_LIGHT_SYNC:
+    temp_sync_square = visual.Rect(
+        win=win,
+        width=SYNC_SQUARE_SIZE,
+        height=SYNC_SQUARE_SIZE,
+        pos=(SYNC_SQUARE_POS_X, SYNC_SQUARE_POS_Y),
+        fillColor='black',
+        lineColor=None
+    )
+    temp_sync_square.draw()
+    win.flip()
+    time.sleep(0.1)  # 確実に表示
+
 def create_dot_stim(color_rgb):
     return visual.ElementArrayStim(
         win, nElements=N_DOTS, elementTex=None, elementMask='circle',
@@ -577,6 +661,16 @@ ORANGE_RGB = [1.0, 0.294, -1.0]
 GREEN_RGB = [-1, 1, -1]
 red_dots   = create_dot_stim(ORANGE_RGB)
 green_dots = create_dot_stim(GREEN_RGB)
+
+# 光同期用白/黒正方形の作成
+sync_square = visual.Rect(
+    win=win,
+    width=SYNC_SQUARE_SIZE,
+    height=SYNC_SQUARE_SIZE,
+    pos=(SYNC_SQUARE_POS_X, SYNC_SQUARE_POS_Y),
+    fillColor='black',  # 初期状態は黒
+    lineColor=None
+)
 
 # 中心線を作成（オプション）
 if USE_CENTER_LINES:
@@ -1095,6 +1189,27 @@ if USE_GVS:
 else:
     print("GVS刺激は無効です")
 
+# 光同期コントローラーの初期化
+light_sync_controller = None
+if USE_LIGHT_SYNC:
+    print("光同期制御を初期化中...")
+    light_sync_controller = LightSyncController(LIGHT_SYNC_SERIAL_PORT, LIGHT_SYNC_BAUDRATE)
+    if light_sync_controller.connect():
+        print("光同期制御が正常に初期化されました")
+        # 初期化後に確実にLOW状態にする
+        light_sync_controller.force_stop()
+    else:
+        print("光同期制御の初期化に失敗しました。光同期なしで続行します。")
+        light_sync_controller = None
+    
+    # 同期用正方形を確実に黒で初期化
+    sync_square.fillColor = 'black'
+    sync_square.draw()
+    win.flip()
+    time.sleep(0.1)  # 確実に表示
+else:
+    print("光同期機能は無効です")
+
 # 音響設定の表示
 print(f"\n音響設定:")
 print(f"- ソースモード: {AUDIO_SOURCE_MODE}")
@@ -1131,6 +1246,11 @@ file_timestamp = None  # 全試行で使用するタイムスタンプ
 try:
     while experiment_running and trial_idx <= MAX_TRIALS:
         print(f"\n=== 試行 {trial_idx}/{MAX_TRIALS} 開始 ===")
+        
+        # ----- 光同期正方形を黒で初期化（試行開始時の安全措置） -----
+        if USE_LIGHT_SYNC:
+            sync_square.fillColor = 'black'
+        
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
         if FORCE_COND:
@@ -1176,10 +1296,18 @@ try:
             stereo_snd.stop()
         stereo_snd = build_audio_source(sync_red, PANNING_MODE)
 
-        # ----- サウンド準備 -----
-        if stereo_snd and stereo_snd.status != constants.STOPPED:
-            stereo_snd.stop()
-        stereo_snd = build_audio_source(sync_red, PANNING_MODE)
+        # ----- 黒い画面を確実に描画してから光同期準備 -----
+        if USE_LIGHT_SYNC:
+            # 黒い正方形を確実に描画
+            sync_square.fillColor = 'black'
+            sync_square.draw()
+            win.flip()
+            time.sleep(0.2)  # 黒い画面が確実に描画されるまで待機
+            
+            # 黒い画面が描画された後にArduinoに刺激検出準備コマンド送信
+            print(f"Trial {trial_idx}: 光同期準備 - 刺激検出準備状態にセット")
+            light_sync_controller.ready()
+            time.sleep(0.1)  # コマンド送信完了を待機
 
         # ----- 測定開始 -----
         if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
@@ -1224,6 +1352,10 @@ try:
                 if key_name == 'escape':
                     experiment_running = False
                     participant_response = 'escape_quit'  # ESCキーでの終了を明示
+                    # ESCキーが押された場合は光同期出力を強制停止
+                    if USE_LIGHT_SYNC and light_sync_controller:
+                        print("ESCキー検出：光同期出力を強制停止")
+                        light_sync_controller.force_stop()
                 else:
                     participant_response = response_mapping.get(key_name, 'invalid')
                 break
@@ -1309,6 +1441,11 @@ try:
                     center_line_green.end = (green_center_x, WIN_H//2)
                     center_line_green.draw()
 
+            # 光同期用白正方形の描画（刺激中は白、ランダムドットより上に描画）
+            if USE_LIGHT_SYNC:
+                sync_square.fillColor = 'white'  # 刺激中は白
+                sync_square.draw()
+
             win.flip()
 
         if stereo_snd and stereo_snd.status != constants.STOPPED:
@@ -1319,6 +1456,12 @@ try:
             print(f"Trial {trial_idx}: GVS刺激停止")
             gvs_controller.stop_stimulation()
             time.sleep(0.05)  # GVS停止の確認
+
+        # ----- 光同期：同期用正方形を黒に戻す -----
+        if USE_LIGHT_SYNC:
+            # 同期用正方形を黒に戻す
+            sync_square.fillColor = 'black'
+            print(f"Trial {trial_idx}: 同期用正方形を黒に戻しました")
 
         # ----- ビープ音再生（試行終了） -----
         if USE_BEEP and beep_sound:
@@ -1454,11 +1597,19 @@ try:
         # ----- ITI -----
         fixation = visual.TextStim(win, text='+', color='white', height=30)
         fixation.draw()
+        # ITI中は光同期用正方形を黒で表示
+        if USE_LIGHT_SYNC:
+            sync_square.fillColor = 'black'
+            sync_square.draw()
         win.flip()
         iti_clock = core.Clock()
         while iti_clock.getTime() < ITI:
             if event.getKeys(['escape']):
                 experiment_running = False
+                # ITI中にESCが押された場合も光同期出力を強制停止
+                if USE_LIGHT_SYNC and light_sync_controller:
+                    print("ITI中ESCキー検出：光同期出力を強制停止")
+                    light_sync_controller.force_stop()
                 break
             core.wait(0.01)
         if not experiment_running: break
@@ -1479,6 +1630,15 @@ finally:
         gvs_controller.stop_stimulation()
         gvs_controller.disconnect()
         print("GVS制御を停止しました")
+
+    # 光同期制御を安全に停止
+    if USE_LIGHT_SYNC and light_sync_controller:
+        # 実験終了時は強制停止コマンドを送信
+        print("実験終了：光同期出力を強制停止")
+        light_sync_controller.force_stop()
+        time.sleep(0.1)  # コマンド送信完了を待機
+        light_sync_controller.disconnect()
+        print("光同期制御を停止しました")
 
     if stereo_snd and stereo_snd.status != constants.STOPPED:
         stereo_snd.stop()

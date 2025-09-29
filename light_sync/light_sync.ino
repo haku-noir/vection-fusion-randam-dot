@@ -1,40 +1,61 @@
-int INPIN=18;//タイミングを取る指標が出てきたらフォトトラから電圧出力される
-int OUTPIN=19;
-int initflag=1; //1ならば初期状態判定を行う
-void getStartTiming(){
-  if(initflag==1){
-    Serial.println(1);
-    digitalWrite(OUTPIN,HIGH);
-  }
+// 共有変数は volatile で宣言する
+volatile bool readyFlag = false;
+volatile bool interruptFired = false; // 割り込みが発生したことを知らせるフラグ
+
+int INPIN = 18;  // タイミングを取る指標が出てきたらフォトトラから電圧出力される
+int OUTPIN = 19;
+
+// ISRはフラグを立てるだけにする
+void IRAM_ATTR getStartTiming() { // ESP32ではISRに IRAM_ATTR を付けると高速化され安定します
+  interruptFired = true;
 }
-void init(){
-  initflag=1;
-  digitalWrite(OUTPIN,LOW);
-}
+
 void setup() {
   Serial.begin(9600);
-  // put your setup code here, to run once:
-  pinMode(OUTPIN,OUTPUT);
-  pinMode(INPIN,INPUT);
-  // ピン番号から割り込み番号への変換には専用の関数を使用
+  pinMode(OUTPIN, OUTPUT);
+  pinMode(INPIN, INPUT);
+  
   attachInterrupt(digitalPinToInterrupt(INPIN), getStartTiming, RISING);
-  init();
+  
+  readyFlag = false;
+  digitalWrite(OUTPIN, LOW);
 }
 
 void loop() {
-  // シリアル入力がある場合
+  // loop()内でフラグをチェックし、実際の処理を行う
+  if (interruptFired) {
+    interruptFired = false; // フラグをすぐに下ろす
+
+    if (readyFlag) {
+      digitalWrite(OUTPIN, HIGH);
+      readyFlag = false;
+    }
+  }
+
+  // シリアル入力の処理
   if (Serial.available()) {
     char receivedChar = Serial.read();
     Serial.print("Received: ");
     Serial.println(receivedChar);
 
     if (receivedChar == 'r') {
-      // reset
-      init();
+      digitalWrite(OUTPIN, LOW);
+      readyFlag = true;
     } else if (receivedChar == 's') {
-      // s入力で強制的にHIGHにする
       digitalWrite(OUTPIN, HIGH);
       Serial.println("OUTPIN set HIGH by 's' command");
+    } else if (receivedChar == 'x') {
+      digitalWrite(OUTPIN, LOW);
+      readyFlag = false;
+      Serial.println("OUTPIN set LOW by 'x' command");
+    } else if (receivedChar == 'd') {
+      Serial.print("Debug - INPIN: ");
+      Serial.print(digitalRead(INPIN) == HIGH ? "HIGH" : "LOW");
+      Serial.print(", OUTPIN: ");
+      Serial.print(digitalRead(OUTPIN) == HIGH ? "HIGH" : "LOW");
+      Serial.print(", readyFlag: ");
+      Serial.print(readyFlag);
+      Serial.print("\n");
     }
   }
 }

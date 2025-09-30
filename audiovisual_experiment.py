@@ -14,7 +14,7 @@ audiovisual_experiment.py
 
 FORCE_COND = 'red'
 FORCE_COND = 'green'
-FORCE_COND = None
+#FORCE_COND = None
 
 # ------------------------------------------------------------------
 # 0. PTB を最優先でロードするための prefs 設定
@@ -73,7 +73,7 @@ GVS_BAUDRATE = 115200        # GVSのボーレート
 
 # 光同期用Arduino設定
 USE_LIGHT_SYNC = True        # 光同期機能を使用するかどうか
-LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-7"  # 光同期用Arduinoのシリアルポート
+LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-6"  # 光同期用Arduinoのシリアルポート
 LIGHT_SYNC_BAUDRATE = 9600   # 光同期用Arduinoのボーレート
 
 # 同期用表示領域設定
@@ -94,7 +94,7 @@ class SoundSource:
 # 'volume': 音量差パンニング
 # 'itd'   : 時間差 (ITD) パンニング
 # 'both'  : 音量差と時間差の両方
-PANNING_MODE = 'both'
+PANNING_MODE = 'volume'
 
 # ★★★ 音響ソースモードを選択 ★★★
 # 'simulation': シミュレーション音（現在の方式）
@@ -139,7 +139,7 @@ MIN_DISTANCE_GAIN = 0.3     # 最小ゲイン（より高く設定）
 
 # SoundSourceオブジェクトをシンプルに定義
 SOUND_SOURCES = [
-    SoundSource(freqs=[523.25]),  # ド(C5)
+#    SoundSource(freqs=[523.25]),  # ド(C5)
 ]
 SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
@@ -1201,7 +1201,7 @@ if USE_LIGHT_SYNC:
     else:
         print("光同期制御の初期化に失敗しました。光同期なしで続行します。")
         light_sync_controller = None
-    
+
     # 同期用正方形を確実に黒で初期化
     sync_square.fillColor = 'black'
     sync_square.draw()
@@ -1246,11 +1246,11 @@ file_timestamp = None  # 全試行で使用するタイムスタンプ
 try:
     while experiment_running and trial_idx <= MAX_TRIALS:
         print(f"\n=== 試行 {trial_idx}/{MAX_TRIALS} 開始 ===")
-        
+
         # ----- 光同期正方形を黒で初期化（試行開始時の安全措置） -----
         if USE_LIGHT_SYNC:
             sync_square.fillColor = 'black'
-        
+
         # ----- この試行のための設定 -----
         cond_type = random.choice(['red', 'green'])
         if FORCE_COND:
@@ -1297,17 +1297,23 @@ try:
         stereo_snd = build_audio_source(sync_red, PANNING_MODE)
 
         # ----- 黒い画面を確実に描画してから光同期準備 -----
-        if USE_LIGHT_SYNC:
+        if USE_LIGHT_SYNC and light_sync_controller:
             # 黒い正方形を確実に描画
             sync_square.fillColor = 'black'
             sync_square.draw()
             win.flip()
             time.sleep(0.2)  # 黒い画面が確実に描画されるまで待機
-            
+
             # 黒い画面が描画された後にArduinoに刺激検出準備コマンド送信
             print(f"Trial {trial_idx}: 光同期準備 - 刺激検出準備状態にセット")
             light_sync_controller.ready()
             time.sleep(0.1)  # コマンド送信完了を待機
+
+        # ----- ビープ音再生（試行開始） -----
+        if USE_BEEP and beep_sound:
+            beep_sound.play()
+            print(f"Trial {trial_idx}: ビープ音再生（試行開始）")
+            time.sleep(BEEP_SEP)  # 区切り音の間隔
 
         # ----- 測定開始 -----
         if COMMUNICATION_MODE == 'WIFI' and udp_comm and udp_comm.running:
@@ -1320,11 +1326,45 @@ try:
             serial_comm.start_measurement()
             time.sleep(0.05)  # 測定開始の確認
 
-        # ----- ビープ音再生（試行開始） -----
-        if USE_BEEP and beep_sound:
-            beep_sound.play()
-            print(f"Trial {trial_idx}: ビープ音再生（試行開始）")
-            time.sleep(BEEP_SEP)  # 区切り音の間隔
+        # ----- 刺激提示 & 応答取得 -----
+        participant_response = 'no_response'
+        rt = -1.0
+
+        # 描画順序の初期設定（初回のみランダム決定）
+        frame_count = 0
+        red_first = random.random() < 0.5  # True: 赤先, False: 緑先
+
+        # ----- 音再生直前：ランダムドットを初期位置でプロット -----
+        # 初期位置（t=0）でのドット位置を設定
+        phase_initial = 2 * np.pi * OSC_FREQ * 0.0  # t=0での位相
+        x_osc_offset_initial = OSC_AMP * np.sin(phase_initial)
+
+        # 初期位置を各ドットの座標に設定
+        red_current_pos[:, 0] = red_base_x + x_osc_offset_initial
+        green_current_pos[:, 0] = green_base_x - x_osc_offset_initial
+        red_dots.xys = red_current_pos
+        green_dots.xys = green_current_pos
+
+        # 初期位置でドットを描画
+        if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
+            red_dots.draw()
+            green_dots.draw()
+        else:
+            green_dots.draw()
+            red_dots.draw()
+
+        # 光同期用正方形も描画（初期状態は黒）
+        if USE_LIGHT_SYNC:
+            sync_square.fillColor = 'black'
+            sync_square.draw()
+
+        # 初期フレームを表示
+        win.flip()
+
+        # ----- 音S刺激開始 -----
+        trial_clock = core.Clock()
+        trial_clock.reset()  # まずクロックをリセット
+        stereo_snd.play()    # 音を再生開始
 
         # ----- GVS刺激開始 -----
         if USE_GVS and gvs_controller:
@@ -1332,17 +1372,9 @@ try:
             gvs_controller.start_stimulation(cond_type)  # 赤なら同相、緑なら逆相
             time.sleep(0.05)  # GVS開始の確認
 
-        # ----- 刺激提示 & 応答取得 -----
-        participant_response = 'no_response'
-        rt = -1.0
-
+        # ----- 音S刺激開始 -----
         trial_clock = core.Clock()
-        stereo_snd.play()
-        trial_clock.reset()
-
-        # 描画順序の初期設定（初回のみランダム決定）
-        frame_count = 0
-        red_first = random.random() < 0.5  # True: 赤先, False: 緑先
+        trial_clock.reset()  # まずクロックをリセット
 
         while trial_clock.getTime() < TRIAL_DURATION:
             keys = event.getKeys(keyList=['r', 'g', 'escape'], timeStamped=trial_clock)

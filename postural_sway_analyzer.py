@@ -140,11 +140,11 @@ def calculate_windowed_correlation(signal1, signal2, window_sec=10.0, fs=60.0):
 def calculate_overall_correlation(signal1, signal2):
     """
     全体相関係数を計算
-    
+
     Args:
         signal1 (array): 信号1（例: 角度変化）
         signal2 (array): 信号2（例: 音響角度変化、GVS DAC出力）
-    
+
     Returns:
         float: 相関係数 (NaNの場合は計算不可)
     """
@@ -153,18 +153,18 @@ def calculate_overall_correlation(signal1, signal2):
         mask = ~(np.isnan(signal1) | np.isnan(signal2))
         if np.sum(mask) < 10:  # 最低10サンプル必要
             return np.nan
-            
+
         clean_signal1 = signal1[mask]
         clean_signal2 = signal2[mask]
-        
+
         # 標準偏差チェック
         if np.std(clean_signal1) < 1e-10 or np.std(clean_signal2) < 1e-10:
             return np.nan
-            
+
         # 相関係数計算
         correlation = np.corrcoef(clean_signal1, clean_signal2)[0, 1]
         return correlation
-        
+
     except Exception as e:
         print(f"全体相関計算エラー: {e}")
         return np.nan
@@ -193,7 +193,7 @@ def find_integrated_analysis_files(input_path):
         '**/*integrated_analysis.csv',
         '**/*integrated_analysis_scope.csv'
     ]
-    
+
     for pattern in search_patterns:
         files = list(Path(input_path).glob(pattern))
         analysis_files.extend(files)
@@ -426,7 +426,7 @@ def save_sway_data(df, output_path, cutoff_freq=3.0):
 def save_correlation_summary(df, output_path, cutoff_freq=3.0):
     """
     相関係数サマリーをCSVファイルに保存
-    
+
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
         output_path (str): 出力ファイルパス
@@ -439,13 +439,13 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
             corr_output_path = f"{base_name}_correlation_summary_{cutoff_freq}Hz.csv"
         else:
             corr_output_path = f"{base_name}_correlation_summary_{cutoff_freq}Hz.csv"
-        
+
         correlations = []
-        
+
         # ロール変化（angle_change_sway）との相関を計算
         if 'angle_change_sway' in df.columns:
             angle_sway = df['angle_change_sway'].values
-            
+
             # 音響角度変化との相関
             if 'audio_angle_change_sway' in df.columns:
                 audio_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_sway'].values)
@@ -456,7 +456,7 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
                     'data_points': len(df),
                     'description': f'ロール変化 vs 音響角度変化 ({cutoff_freq}Hz LPF)'
                 })
-                
+
             # 0.3Hz音響データとの相関（利用可能な場合）
             if 'audio_angle_change_0_3hz' in df.columns:
                 audio_0_3hz_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_0_3hz'].values)
@@ -467,7 +467,7 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
                     'data_points': len(df),
                     'description': 'ロール変化 vs 音響角度変化 (0.3Hz LPF)'
                 })
-                
+
             # GVS DACとの相関
             if 'gvs_dac_output_sway' in df.columns:
                 gvs_corr = calculate_overall_correlation(angle_sway, df['gvs_dac_output_sway'].values)
@@ -478,7 +478,7 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
                     'data_points': len(df),
                     'description': f'ロール変化 vs GVS DAC出力 ({cutoff_freq}Hz LPF)'
                 })
-                
+
             # 視覚刺激との相関
             if 'red_dot_mean_x_sway' in df.columns:
                 red_corr = calculate_overall_correlation(angle_sway, df['red_dot_mean_x_sway'].values)
@@ -489,7 +489,7 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
                     'data_points': len(df),
                     'description': f'ロール変化 vs 赤ドットX座標 ({cutoff_freq}Hz LPF)'
                 })
-                
+
             if 'green_dot_mean_x_sway' in df.columns:
                 green_corr = calculate_overall_correlation(angle_sway, df['green_dot_mean_x_sway'].values)
                 correlations.append({
@@ -499,12 +499,12 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
                     'data_points': len(df),
                     'description': f'ロール変化 vs 緑ドットX座標 ({cutoff_freq}Hz LPF)'
                 })
-        
+
         # データフレーム作成・保存
         if correlations:
             corr_df = pd.DataFrame(correlations)
             corr_df.to_csv(corr_output_path, index=False)
-            
+
             print(f"相関係数サマリーを保存: {os.path.basename(corr_output_path)}")
             print("相関係数:")
             for corr in correlations:
@@ -512,12 +512,12 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
                     print(f"  - {corr['description']}: {corr['correlation_coefficient']:.3f}")
                 else:
                     print(f"  - {corr['description']}: N/A (計算不可)")
-            
+
             return corr_output_path
         else:
             print("相関係数計算に必要なデータが見つかりませんでした")
             return None
-            
+
     except Exception as e:
         print(f"エラー: 相関係数サマリー保存に失敗: {e}")
         return None
@@ -548,13 +548,13 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         folder_type == 'audio' and 'audio_angle_change_sway' not in df.columns
     )
 
-    # audioの場合は0.3Hzプロット用に+1、相関プロット用に+1
+    # audioの場合は0.3Hzプロット用に+1、窓相関プロット用に+1、全体相関プロット用に+1
     if folder_type == 'audio' and not is_visual_only and ENABLE_AUDIO_FILTER:
-        subplot_count = 5  # 加速度、視覚、音響(3Hz)、音響(0.3Hz)、相関
+        subplot_count = 6  # 加速度、視覚、音響(3Hz)、音響(0.3Hz)、窓相関、全体相関
     elif not is_visual_only:
-        subplot_count = 4  # GVSの場合
+        subplot_count = 5  # GVSの場合：加速度、視覚、刺激、窓相関、全体相関
     else:
-        subplot_count = 3  # 視覚のみの場合
+        subplot_count = 4  # 視覚のみの場合：加速度、視覚、窓相関、全体相関
 
     fig, axes = plt.subplots(subplot_count, 1, figsize=(15, 12 if folder_type == 'audio' and not is_visual_only else (16 if not is_visual_only else 10)))
 
@@ -620,24 +620,24 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
                               color='blue', alpha=0.7, label='GVS DAC出力', linewidth=1.5)
 
             if 'sine_value_internal_sway' in df.columns:
-                line3 = ax3_1.plot(df['psychopy_time'], df['sine_value_internal_sway'], 
+                line2 = ax3_1.plot(df['psychopy_time'], df['sine_value_internal_sway'], 
                                   color='purple', alpha=0.5, label='内部sin値(身体動揺)', linewidth=1.5)
             else:
-                line3 = []
+                line2 = []
 
             ax3_1.set_ylabel('GVS出力値 (身体動揺成分)', color='blue')
             ax3_1.tick_params(axis='y', labelcolor='blue')
 
             # 角度変化（身体動揺成分、右軸）
             ax3_2 = ax3_1.twinx()
-            line4 = ax3_2.plot(df['psychopy_time'], df['angle_change_sway'], 
+            line3 = ax3_2.plot(df['psychopy_time'], df['angle_change_sway'], 
                               color='orange', linewidth=2, alpha=0.8, label='ロール変化(身体動揺)')
             ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
             ax3_2.set_ylabel('角度変化 (度)', color='orange')
             ax3_2.tick_params(axis='y', labelcolor='orange')
 
             # 凡例を結合
-            all_lines = line1 + line2 + line3 + line4
+            all_lines = line1 + line2 + line3
             labels = [l.get_label() for l in all_lines]
             ax3_1.legend(all_lines, labels, loc='upper left')
             ax3_1.set_title(f'GVS刺激と角度変化 (身体動揺成分: {cutoff_freq}Hz LPF)')
@@ -714,8 +714,8 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         ax4_1.set_title('音響刺激（0.3Hz LPF）と角度変化の重ね合わせ')
         ax4_1.grid(True, alpha=0.3)
 
-    # 相関プロット（最後のサブプロット）
-    corr_plot_idx = subplot_count - 1
+    # 窓相関プロット（最後から2番目のサブプロット）
+    corr_plot_idx = subplot_count - 2
 
     # 視覚刺激との相関をプロット
     has_visual_corr = False
@@ -766,6 +766,93 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
     axes[corr_plot_idx].legend()
     axes[corr_plot_idx].grid(True, alpha=0.3)
 
+    # 全体相関係数プロット（最後のサブプロット）
+    overall_corr_plot_idx = subplot_count - 1
+
+    # 相関係数データを計算
+    correlations = []
+    corr_values = []
+    corr_labels = []
+    corr_colors = []
+
+    if 'angle_change_sway' in df.columns:
+        angle_sway = df['angle_change_sway'].values
+
+        # 音響角度変化との相関
+        if 'audio_angle_change_sway' in df.columns:
+            audio_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_sway'].values)
+            if not np.isnan(audio_corr):
+                corr_values.append(audio_corr)
+                corr_labels.append(f'音響角度変化')
+                corr_colors.append('blue')
+
+        # 0.3Hz音響データとの相関
+        if 'audio_angle_change_0_3hz' in df.columns:
+            audio_0_3hz_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_0_3hz'].values)
+            if not np.isnan(audio_0_3hz_corr):
+                corr_values.append(audio_0_3hz_corr)
+                corr_labels.append('音響角度変化(0.3Hz LPF)')
+                corr_colors.append('darkblue')
+
+        # GVS DACとの相関
+        if 'gvs_dac_output_sway' in df.columns:
+            gvs_corr = calculate_overall_correlation(angle_sway, df['gvs_dac_output_sway'].values)
+            if not np.isnan(gvs_corr):
+                corr_values.append(gvs_corr)
+                corr_labels.append(f'GVS DAC')
+                corr_colors.append('darkblue')
+
+        # 赤ドットとの相関
+        if 'red_dot_mean_x_sway' in df.columns:
+            red_corr = calculate_overall_correlation(angle_sway, df['red_dot_mean_x_sway'].values)
+            if not np.isnan(red_corr):
+                corr_values.append(red_corr)
+                corr_labels.append(f'赤ドット')
+                corr_colors.append('red')
+
+        # 緑ドットとの相関
+        if 'green_dot_mean_x_sway' in df.columns:
+            green_corr = calculate_overall_correlation(angle_sway, df['green_dot_mean_x_sway'].values)
+            if not np.isnan(green_corr):
+                corr_values.append(green_corr)
+                corr_labels.append(f'緑ドット')
+                corr_colors.append('green')
+
+    # 相関係数グラフを描画
+    if corr_values:
+        bars = axes[overall_corr_plot_idx].bar(corr_labels, corr_values, color=corr_colors, alpha=0.7, edgecolor='black', linewidth=1)
+
+        # 相関係数の値をバーの上に表示
+        for bar, corr_val in zip(bars, corr_values):
+            height = bar.get_height()
+            axes[overall_corr_plot_idx].text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.03),
+                   f'{corr_val:.3f}', ha='center', va='bottom' if height >= 0 else 'top', fontweight='bold', fontsize=9)
+
+        axes[overall_corr_plot_idx].set_ylabel('相関係数', fontsize=10)
+        axes[overall_corr_plot_idx].set_title(f'ロール変化との全体相関係数', fontsize=12)
+        axes[overall_corr_plot_idx].set_ylim(-1.1, 1.1)
+        axes[overall_corr_plot_idx].axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        axes[overall_corr_plot_idx].grid(True, alpha=0.3, axis='y')
+
+        # 有意性のガイドライン
+        axes[overall_corr_plot_idx].axhline(y=0.3, color='orange', linestyle='--', alpha=0.5, label='弱い相関 (±0.3)')
+        axes[overall_corr_plot_idx].axhline(y=-0.3, color='orange', linestyle='--', alpha=0.5)
+        axes[overall_corr_plot_idx].axhline(y=0.5, color='red', linestyle='--', alpha=0.5, label='中程度の相関 (±0.5)')
+        axes[overall_corr_plot_idx].axhline(y=-0.5, color='red', linestyle='--', alpha=0.5)
+        axes[overall_corr_plot_idx].legend(loc='upper right', fontsize=8)
+
+        # X軸ラベルを回転
+        axes[overall_corr_plot_idx].tick_params(axis='x', rotation=45, labelsize=9)
+
+        print("相関係数:")
+        for label, corr_val in zip(corr_labels, corr_values):
+            clean_label = label.replace('\\n', ' ')
+            print(f"  - {clean_label}: {corr_val:.3f}")
+    else:
+        # 相関データがない場合は空のプロット
+        axes[overall_corr_plot_idx].text(0.5, 0.5, '相関係数データなし', ha='center', va='center', transform=axes[overall_corr_plot_idx].transAxes)
+        axes[overall_corr_plot_idx].set_title('ロール変化との全体相関係数')
+
     plt.tight_layout()
 
     # グラフを保存（周波数情報を含む）
@@ -773,14 +860,14 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
     scope_suffix = "_scope" if is_scope_data else ""
     output_file = os.path.join(folder_path, f"{base_name}{scope_suffix}_sway_analysis_{cutoff_freq}Hz.png")
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"身体動揺解析グラフを保存: {os.path.basename(output_file)}")
+    print(f"身体動揺解析グラフ（相関係数含む）を保存: {os.path.basename(output_file)}")
     plt.close()
 
 
 def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is_scope_data=False):
     """
     相関係数サマリーの棒グラフを作成
-    
+
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
         session_id (str): セッションID
@@ -793,11 +880,11 @@ def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_fr
         correlations = []
         labels = []
         colors = []
-        
+
         # ロール変化（angle_change_sway）との相関を計算
         if 'angle_change_sway' in df.columns:
             angle_sway = df['angle_change_sway'].values
-            
+
             # 音響角度変化との相関
             if 'audio_angle_change_sway' in df.columns:
                 audio_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_sway'].values)
@@ -805,7 +892,7 @@ def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_fr
                     correlations.append(audio_corr)
                     labels.append(f'音響角度変化\n({cutoff_freq}Hz LPF)')
                     colors.append('blue')
-                    
+
             # 0.3Hz音響データとの相関
             if 'audio_angle_change_0_3hz' in df.columns:
                 audio_0_3hz_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_0_3hz'].values)
@@ -813,7 +900,7 @@ def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_fr
                     correlations.append(audio_0_3hz_corr)
                     labels.append('音響角度変化\n(0.3Hz LPF)')
                     colors.append('darkblue')
-                    
+
             # GVS DACとの相関
             if 'gvs_dac_output_sway' in df.columns:
                 gvs_corr = calculate_overall_correlation(angle_sway, df['gvs_dac_output_sway'].values)
@@ -821,7 +908,7 @@ def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_fr
                     correlations.append(gvs_corr)
                     labels.append(f'GVS DAC出力\n({cutoff_freq}Hz LPF)')
                     colors.append('red')
-                    
+
             # 視覚刺激との相関
             if 'red_dot_mean_x_sway' in df.columns:
                 red_corr = calculate_overall_correlation(angle_sway, df['red_dot_mean_x_sway'].values)
@@ -829,42 +916,42 @@ def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_fr
                     correlations.append(red_corr)
                     labels.append(f'赤ドットX座標\n({cutoff_freq}Hz LPF)')
                     colors.append('red')
-                    
+
             if 'green_dot_mean_x_sway' in df.columns:
                 green_corr = calculate_overall_correlation(angle_sway, df['green_dot_mean_x_sway'].values)
                 if not np.isnan(green_corr):
                     correlations.append(green_corr)
                     labels.append(f'緑ドットX座標\n({cutoff_freq}Hz LPF)')
                     colors.append('green')
-        
+
         # グラフ作成
         if correlations:
             fig, ax = plt.subplots(figsize=(12, 6))
-            
+
             bars = ax.bar(labels, correlations, color=colors, alpha=0.7, edgecolor='black', linewidth=1)
-            
+
             # 相関係数の値をバーの上に表示
             for bar, corr in zip(bars, correlations):
                 height = bar.get_height()
                 ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.03),
                        f'{corr:.3f}', ha='center', va='bottom' if height >= 0 else 'top', fontweight='bold')
-            
+
             ax.set_ylabel('相関係数', fontsize=12)
             ax.set_title(f'ロール変化との相関係数 - {folder_type.upper()} Session: {session_id}', fontsize=14)
             ax.set_ylim(-1.1, 1.1)
             ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
             ax.grid(True, alpha=0.3, axis='y')
-            
+
             # 有意性のガイドライン
             ax.axhline(y=0.3, color='orange', linestyle='--', alpha=0.5, label='弱い相関 (±0.3)')
             ax.axhline(y=-0.3, color='orange', linestyle='--', alpha=0.5)
             ax.axhline(y=0.5, color='red', linestyle='--', alpha=0.5, label='中程度の相関 (±0.5)')
             ax.axhline(y=-0.5, color='red', linestyle='--', alpha=0.5)
             ax.legend()
-            
+
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
-            
+
             # グラフを保存
             base_name = os.path.splitext(session_id)[0] if '.' in session_id else session_id
             scope_suffix = "_scope" if is_scope_data else ""
@@ -872,12 +959,12 @@ def plot_correlation_summary(df, session_id, folder_path, folder_type, cutoff_fr
             plt.savefig(output_file, dpi=300, bbox_inches='tight')
             print(f"相関係数サマリーグラフを保存: {os.path.basename(output_file)}")
             plt.close()
-            
+
             return output_file
         else:
             print("相関係数グラフ作成に必要なデータが見つかりませんでした")
             return None
-            
+
     except Exception as e:
         print(f"エラー: 相関係数グラフ作成に失敗: {e}")
         return None
@@ -951,14 +1038,11 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
         # 相関係数サマリーを保存
         print("相関係数サマリーを計算・保存中...")
         corr_file_path = save_correlation_summary(filtered_df, filepath, cutoff_freq)
-        
+
         # グラフを作成・保存
         if sway_file_path:
-            print("身体動揺解析グラフを作成中...")
+            print("身体動揺解析グラフ（相関係数含む）を作成中...")
             plot_sway_data(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data)
-            
-            print("相関係数サマリーグラフを作成中...")
-            plot_correlation_summary(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data)
 
         return True
     else:
@@ -987,8 +1071,8 @@ def main():
             print(f"警告: 無効な周波数指定 '{sys.argv[2]}'。デフォルト3Hzを使用します。")
 
     # ON/OFFオプションの設定
-    enable_audio_0_3hz_filter = True  # デフォルトON
-    enable_gvs_sine_internal = True   # デフォルトON
+    enable_audio_0_3hz_filter = False  # デフォルトOFF
+    enable_gvs_sine_internal = False   # デフォルトOFF
 
     # コマンドライン引数でのON/OFF制御
     if '--no-audio-0-3hz' in sys.argv:

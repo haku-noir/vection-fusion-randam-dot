@@ -14,7 +14,19 @@ audiovisual_experiment.py
 
 FORCE_COND = 'red'
 FORCE_COND = 'green'
-#FORCE_COND = None
+FORCE_COND = None
+
+# ★★★ 実験条件制御設定 ★★★
+# 各条件をcond_typeに対して反対にするかどうかの設定
+# 注意: これらの設定は個別にON/OFFできます（互いに独立）
+SINGLE_COLOR_DOT = False     # ランダムドット1色のみ表示（cond_typeの色のみ）
+                            # True: cond_type='red'なら赤ドットのみ、'green'なら緑ドットのみ
+VISUAL_REVERSE = False       # 視覚刺激の反対（SINGLE_COLOR_DOTでcond_typeと反対の色のみ表示）
+                            # True: cond_type='red'なら緑ドットのみ、'green'なら赤ドットのみ
+AUDIO_REVERSE = False        # 音響刺激の反対（cond_typeと反対側にパンニング）
+                            # True: cond_type='red'なら緑ドット側に音がパンニング、'green'なら赤ドット側に音がパンニング
+GVS_REVERSE = False          # GVS刺激の反対（cond_typeと反対の極性）
+                            # True: cond_type='red'なら緑条件のGVS刺激、'green'なら赤条件のGVS刺激
 
 # ------------------------------------------------------------------
 # 0. PTB を最優先でロードするための prefs 設定
@@ -1257,9 +1269,15 @@ try:
             cond_type = FORCE_COND
 
         print(f"\ncond_type: {cond_type}")
+        print(f"制御設定: SINGLE_COLOR_DOT={SINGLE_COLOR_DOT}, VISUAL_REVERSE={VISUAL_REVERSE}, AUDIO_REVERSE={AUDIO_REVERSE}, GVS_REVERSE={GVS_REVERSE}")
 
-        # 音響情報の記録用変数
-        sync_red = (cond_type == 'red')
+        # 音響情報の記録用変数（AUDIO_REVERSEに応じて反転）
+        if AUDIO_REVERSE:
+            sync_red = (cond_type == 'green')  # 反対にする
+            print(f"音響反転: cond_type={cond_type} → 音響同期={sync_red}")
+        else:
+            sync_red = (cond_type == 'red')
+
         audio_sync_type = 'red_sync' if sync_red else 'green_sync'
 
         if AUDIO_SOURCE_MODE == 'mp3':
@@ -1345,13 +1363,28 @@ try:
         red_dots.xys = red_current_pos
         green_dots.xys = green_current_pos
 
-        # 初期位置でドットを描画
-        if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
-            red_dots.draw()
-            green_dots.draw()
+        # 初期位置でドットを描画（制御変数に基づく）
+        if SINGLE_COLOR_DOT:
+            if VISUAL_REVERSE:
+                # cond_typeと反対の色を同期させて表示
+                if cond_type == 'green':
+                    red_dots.draw()
+                else:
+                    green_dots.draw()
+            else:
+                # cond_typeの色のみ表示
+                if cond_type == 'red':
+                    red_dots.draw()
+                else:
+                    green_dots.draw()
         else:
-            green_dots.draw()
-            red_dots.draw()
+            # 通常の描画
+            if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
+                red_dots.draw()
+                green_dots.draw()
+            else:
+                green_dots.draw()
+                red_dots.draw()
 
         # 光同期用正方形も描画（初期状態は黒）
         if USE_LIGHT_SYNC:
@@ -1368,8 +1401,14 @@ try:
 
         # ----- GVS刺激開始 -----
         if USE_GVS and gvs_controller:
-            print(f"Trial {trial_idx}: GVS刺激開始 ({cond_type})")
-            gvs_controller.start_stimulation(cond_type)  # 赤なら同相、緑なら逆相
+            # GVS_REVERSEに応じて刺激タイプを決定
+            if GVS_REVERSE:
+                gvs_condition = 'green' if cond_type == 'red' else 'red'
+                print(f"Trial {trial_idx}: GVS刺激開始 ({cond_type} → {gvs_condition}に反転)")
+            else:
+                gvs_condition = cond_type
+                print(f"Trial {trial_idx}: GVS刺激開始 ({gvs_condition})")
+            gvs_controller.start_stimulation(gvs_condition)  # 赤なら同相、緑なら逆相
             time.sleep(0.05)  # GVS開始の確認
 
         # ----- 音S刺激開始 -----
@@ -1443,15 +1482,30 @@ try:
             green_dot_positions.append(green_mean_xy.tolist())
             timestamps.append(now)
 
-            # フレーム毎に交互に描画順を変更
-            if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
-                # 赤ドットを先に描画
-                red_dots.draw()
-                green_dots.draw()
+            # ドット描画の制御
+            if SINGLE_COLOR_DOT:
+                if VISUAL_REVERSE:
+                    # cond_typeと反対の色を同期させて表示
+                    if cond_type == 'green':
+                        red_dots.draw()
+                    else:
+                        green_dots.draw()
+                else:
+                    # cond_typeの色のみ表示
+                    if cond_type == 'red':
+                        red_dots.draw()
+                    else:
+                        green_dots.draw()
             else:
-                # 緑ドットを先に描画
-                green_dots.draw()
-                red_dots.draw()
+                # 通常の描画（フレーム毎に交互に描画順を変更）
+                if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
+                    # 赤ドットを先に描画
+                    red_dots.draw()
+                    green_dots.draw()
+                else:
+                    # 緑ドットを先に描画
+                    green_dots.draw()
+                    red_dots.draw()
 
             frame_count += 1
 
@@ -1511,6 +1565,7 @@ try:
                 header = [
                     'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
                     'stimulus_start_time', 'stimulus_start_timestamp',  # 刺激開始時間の追加
+                    'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse',  # 新しい制御変数
                     'audio_source_mode', 'audio_sync_type', 'audio_file_used',
                     'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
                     'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
@@ -1529,6 +1584,7 @@ try:
         log_data = [
             trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
             stimulus_start_time_str, stimulus_start_timestamp,  # 刺激開始時間を追加
+            SINGLE_COLOR_DOT, VISUAL_REVERSE, AUDIO_REVERSE, GVS_REVERSE,  # 新しい制御変数を追加
             AUDIO_SOURCE_MODE, audio_sync_type, audio_file_used,
             WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
             OSC_AMP, audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,

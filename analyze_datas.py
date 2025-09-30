@@ -486,10 +486,30 @@ def merge_experiment_data(dataframes, folder_type):
                 dac_df, 'time_sec', target_time, dac_fs_est
             )
 
-            # DACデータを統合
+            # DACデータを統合（dac25_outputとdac26_outputからgvs_dac_outputを作成）
+            dac25_values = None
+            dac26_values = None
+            
             for col, values in resampled_dac.items():
-                if col != 'time_sec':
+                if col == 'dac25_output':
+                    dac25_values = values
+                elif col == 'dac26_output':
+                    dac26_values = values
+                elif col != 'time_sec':
                     merged_df[col] = values
+            
+            # PIN25(+方向)とPIN26(-方向)を結合してGVS出力を作成
+            if dac25_values is not None and dac26_values is not None:
+                merged_df['gvs_dac_output'] = dac25_values - dac26_values
+                print(f"    GVS出力を作成: PIN25(+) - PIN26(-)")
+            elif dac25_values is not None:
+                merged_df['gvs_dac_output'] = dac25_values
+                print(f"    GVS出力を作成: PIN25のみ")
+            elif dac26_values is not None:
+                merged_df['gvs_dac_output'] = -dac26_values
+                print(f"    GVS出力を作成: -PIN26のみ")
+            else:
+                print(f"    警告: DAC出力データが見つかりません")
         else:
             print(f"    警告: 'time_sec'列が見つかりません")
 
@@ -544,7 +564,7 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
 
     # フォルダタイプに応じてサブプロット数を決定
     is_visual_only = folder_type not in ['gvs', 'audio'] or (
-        folder_type == 'gvs' and 'dac25_output' not in df.columns
+        folder_type == 'gvs' and 'gvs_dac_output' not in df.columns
     ) or (
         folder_type == 'audio' and 'audio_angle_change' not in df.columns
     )
@@ -597,28 +617,22 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
 
     # サブプロット3: 刺激データと角度変化の重ね合わせ（視覚刺激のみでない場合のみ）
     if not is_visual_only:
-        if folder_type == 'gvs' and 'dac25_output' in df.columns and 'angle_change' in df.columns:
+        if folder_type == 'gvs' and 'gvs_dac_output' in df.columns and 'angle_change' in df.columns:
             ax3_1 = axes[2]
-            # DAC出力（左軸）- PIN25: +方向、PIN26: -方向
-            line1 = ax3_1.plot(df['psychopy_time'], df['dac25_output'], color='blue', alpha=0.7, label='PIN25出力(+方向)')
-            line2 = ax3_1.plot(df['psychopy_time'], -df['dac26_output'], color='cyan', alpha=0.7, label='PIN26出力(-方向)')
-            if 'sine_value_internal' in df.columns:
-                line3 = ax3_1.plot(df['psychopy_time'], df['sine_value_internal'], color='purple', alpha=0.5, label='内部sin値')
-            ax3_1.set_ylabel('GVS出力値 (PIN25: +, PIN26: -)', color='blue')
+            # GVS出力（左軸）
+            line1 = ax3_1.plot(df['psychopy_time'], df['gvs_dac_output'], color='blue', alpha=0.7, label='GVS出力')
+            ax3_1.set_ylabel('GVS出力値', color='blue')
             ax3_1.tick_params(axis='y', labelcolor='blue')
 
             # 角度変化（右軸）
             ax3_2 = ax3_1.twinx()
-            line4 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+            line2 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
             ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
             ax3_2.set_ylabel('角度変化 (度)', color='orange')
             ax3_2.tick_params(axis='y', labelcolor='orange')
 
-            # 凡例を結合（sine_value_internalがある場合のみline3を追加）
-            all_lines = line1 + line2 + line4
-            if 'sine_value_internal' in df.columns:
-                all_lines = line1 + line2 + line3 + line4
-
+            # 凡例を結合
+            all_lines = line1 + line2
             labels = [l.get_label() for l in all_lines]
             ax3_1.legend(all_lines, labels, loc='upper left')
             ax3_1.set_title('GVS刺激と角度変化の重ね合わせ')
@@ -690,7 +704,7 @@ def save_angle_data_to_csv(df, output_file, has_dac_output=False, has_audio=Fals
 
     # DAC出力データがある場合は追加
     if has_dac_output:
-        dac_columns = ['dac25_output', 'dac26_output', 'sine_value_internal']
+        dac_columns = ['gvs_dac_output']
         for col in dac_columns:
             if col in df.columns:
                 columns_to_save.append(col)

@@ -131,7 +131,7 @@ def find_data_files(folder_path, condition='red'):
 
     elif folder_type == 'audio':
         for file in files:
-            if (f'audio_{condition}_960Hz.csv' in file or f'audio_trial_1.csv' in file or 
+            if (f'audio_{condition}_integrated_analysis.csv' in file or f'audio_trial_1.csv' in file or 
                 re.match(rf'\d{{8}}_\d{{6}}_audio.*{condition}.*\.csv$', file) or 
                 re.match(r'\d{8}_\d{6}_audio.*trial_1\.csv$', file)):
                 data_files['audio'] = os.path.join(folder_path, file)
@@ -225,7 +225,8 @@ def find_session_data_files(folder_path, session_id, condition='red'):
             elif folder_type == 'gvs' and file.startswith(f"{session_id}_dac_output_{condition}.csv"):
                 data_files['dac_output'] = os.path.join(folder_path, file)
             elif folder_type == 'audio' and (file.startswith(f"{session_id}_audio_trial_1.csv") or 
-                                             file.startswith(f"{session_id}_audio_{condition}")):
+                                             file.startswith(f"{session_id}_audio_{condition}") or
+                                             file == f"audio_{condition}_integrated_analysis.csv"):
                 data_files['audio'] = os.path.join(folder_path, file)
         else:
             # タイムスタンプなしファイル
@@ -249,10 +250,10 @@ def find_session_data_files(folder_path, session_id, condition='red'):
 
     # オーディオフォルダのaudioファイル
     elif folder_type == 'audio':
-        audio_file = os.path.join(script_dir, f'audio_{condition}_960Hz.csv')
+        audio_file = os.path.join(script_dir, f'audio_{condition}_integrated_analysis.csv')
         if os.path.exists(audio_file):
             data_files['audio'] = audio_file
-            print(f"  共通ファイルを使用: audio_{condition}_960Hz.csv")
+            print(f"  共通ファイルを使用: audio_{condition}_integrated_analysis.csv")
 
     return data_files
 
@@ -496,26 +497,26 @@ def merge_experiment_data(dataframes, folder_type):
         audio_df = dataframes['audio']
         print(f"\n  音響データのリサンプリング (samples: {len(audio_df)}):")
 
-        if 'Time_s' in audio_df.columns:
+        if 'psychopy_time' in audio_df.columns and 'angle_change' in audio_df.columns:
             # 音響データの推定サンプリング周波数
-            audio_fs_est = len(audio_df) / (audio_df['Time_s'].max() - audio_df['Time_s'].min())
+            audio_fs_est = len(audio_df) / (audio_df['psychopy_time'].max() - audio_df['psychopy_time'].min())
             print(f"    推定Fs: {audio_fs_est:.1f}Hz")
+            print(f"    angle_changeを音響データとして使用")
 
             # 音響データをリサンプリング
             resampled_audio = resample_data_with_antialiasing(
-                audio_df, 'Time_s', target_time, audio_fs_est
+                audio_df, 'psychopy_time', target_time, audio_fs_est
             )
 
-            # 音響データを統合（列名をマッピング）
+            # 音響データを統合（angle_changeを使用）
             for col, values in resampled_audio.items():
-                if col == 'Amplitude_L':
-                    merged_df['audio_amplitude_l'] = values
-                elif col == 'Amplitude_R':
-                    merged_df['audio_amplitude_r'] = values
-                elif col not in ['Time_s']:
-                    merged_df[col] = values
+                if col == 'angle_change':
+                    merged_df['audio_angle_change'] = values
+                elif col not in ['psychopy_time']:
+                    merged_df[f'audio_{col}'] = values
         else:
-            print(f"    警告: 'Time_s'列が見つかりません")
+            print(f"    警告: 'psychopy_time'または'angle_change'列が見つかりません")
+            print(f"    利用可能な列: {list(audio_df.columns)}")
 
     print(f"\nリサンプリング統合結果:")
     print(f"  - 最終データサンプル数: {len(merged_df)}")
@@ -545,7 +546,7 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
     is_visual_only = folder_type not in ['gvs', 'audio'] or (
         folder_type == 'gvs' and 'dac25_output' not in df.columns
     ) or (
-        folder_type == 'audio' and 'audio_amplitude_l' not in df.columns and 'audio_amplitude_r' not in df.columns
+        folder_type == 'audio' and 'audio_angle_change' not in df.columns
     )
 
     subplot_count = 2 if is_visual_only else 3
@@ -625,35 +626,28 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
         elif folder_type == 'audio' and 'angle_change' in df.columns:
             ax3_1 = axes[2]
 
-            # 音響データがある場合はプロットする
-            if 'audio_amplitude_l' in df.columns or 'audio_amplitude_r' in df.columns:
-                # 音響振幅（左軸）
-                lines_audio = []
-                if 'audio_amplitude_l' in df.columns:
-                    line1 = ax3_1.plot(df['psychopy_time'], df['audio_amplitude_l'], color='blue', alpha=0.6, label='音響振幅L')
-                    lines_audio.extend(line1)
-                if 'audio_amplitude_r' in df.columns:
-                    line2 = ax3_1.plot(df['psychopy_time'], df['audio_amplitude_r'], color='cyan', alpha=0.6, label='音響振幅R')
-                    lines_audio.extend(line2)
-
-                ax3_1.set_ylabel('音響振幅', color='blue')
+            # 音響データ（audio_angle_change）がある場合はプロットする
+            if 'audio_angle_change' in df.columns:
+                # 音響角度変化（左軸）
+                line1 = ax3_1.plot(df['psychopy_time'], df['audio_angle_change'], color='blue', alpha=0.7, label='音響ロール変化')
+                ax3_1.set_ylabel('音響角度変化 (度)', color='blue')
                 ax3_1.tick_params(axis='y', labelcolor='blue')
 
-                # 角度変化（右軸）
+                # 姿勢角度変化（右軸）
                 ax3_2 = ax3_1.twinx()
-                line_angle = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='ロール変化')
+                line2 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='姿勢ロール変化')
                 ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
-                ax3_2.set_ylabel('角度変化 (度)', color='orange')
+                ax3_2.set_ylabel('姿勢角度変化 (度)', color='orange')
                 ax3_2.tick_params(axis='y', labelcolor='orange')
 
                 # 凡例を結合
-                all_lines = lines_audio + line_angle
+                all_lines = line1 + line2
                 labels = [l.get_label() for l in all_lines]
                 ax3_1.legend(all_lines, labels, loc='upper left')
-                ax3_1.set_title('音響刺激と角度変化の重ね合わせ')
+                ax3_1.set_title('音響刺激（角度変化）と姿勢角度変化の比較')
             else:
-                # 音響データがない場合は角度変化のみ
-                axes[2].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='ロール変化')
+                # 音響データがない場合は姿勢角度変化のみ
+                axes[2].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='姿勢ロール変化')
                 axes[2].axhline(y=0, color='black', linestyle='--', alpha=0.5)
                 axes[2].set_title('音響刺激と角度変化\n（音響データなし）')
                 axes[2].set_ylabel('角度変化 (度)')
@@ -703,7 +697,7 @@ def save_angle_data_to_csv(df, output_file, has_dac_output=False, has_audio=Fals
 
     # オーディオデータがある場合は追加
     if has_audio:
-        audio_columns = ['audio_amplitude_l', 'audio_amplitude_r']
+        audio_columns = ['audio_angle_change']
         for col in audio_columns:
             if col in df.columns:
                 columns_to_save.append(col)
@@ -843,9 +837,9 @@ def process_experiment_folder(session_path):
         return
 
     # データの統合処理
-    has_dac_output = 'dac_output' in dataframes
-    has_audio = 'audio' in dataframes
     folder_type = get_folder_type(folder_path)
+    has_dac_output = 'dac_output' in dataframes
+    has_audio = 'audio' in dataframes and folder_type == 'audio'
 
     # 統合データフレームの作成
     integrated_df = merge_experiment_data(dataframes, folder_type)

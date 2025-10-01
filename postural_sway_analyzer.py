@@ -47,6 +47,16 @@ except ImportError as e:
     def get_condition_from_experiment_log(experiment_log_path, trial_number=1):
         return 'red'
 
+# データ切り出し設定
+# 指定した時間範囲でデータを切り出して処理する
+# Noneの場合は全データを使用
+DATA_START_TIME = 20.0  # 開始時刻（秒）、例: 10.0
+DATA_END_TIME = None    # 終了時刻（秒）、例: 60.0
+
+# 例: 10秒から60秒までのデータを使用する場合
+# DATA_START_TIME = 10.0
+# DATA_END_TIME = 60.0
+
 ENABLE_AUDIO_FILTER = False
 
 def apply_lowpass_filter(data, cutoff_freq=3.0, fs=60.0, order=4):
@@ -90,6 +100,81 @@ def apply_lowpass_filter(data, cutoff_freq=3.0, fs=60.0, order=4):
     except Exception as e:
         print(f"フィルタ適用エラー: {e}")
         return data.copy()
+
+
+def trim_data_by_time_range(df, start_time=None, end_time=None, time_column='psychopy_time'):
+    """
+    指定した時間範囲でデータフレームを切り出し
+
+    Args:
+        df (pd.DataFrame): 入力データフレーム
+        start_time (float): 開始時刻（秒）、Noneの場合は最初から
+        end_time (float): 終了時刻（秒）、Noneの場合は最後まで
+        time_column (str): 時刻カラム名
+
+    Returns:
+        pd.DataFrame: 切り出されたデータフレーム
+        dict: 切り出し情報
+    """
+    try:
+        if time_column not in df.columns:
+            print(f"警告: 時刻カラム'{time_column}'が見つかりません")
+            return df.copy(), {'trimmed': False, 'reason': f'Missing {time_column} column'}
+
+        original_length = len(df)
+        original_duration = df[time_column].max() - df[time_column].min()
+
+        # データの時間範囲を取得
+        data_start = df[time_column].min()
+        data_end = df[time_column].max()
+
+        # 切り出し範囲を決定
+        trim_start = data_start if start_time is None else max(data_start, start_time)
+        trim_end = data_end if end_time is None else min(data_end, end_time)
+
+        # 範囲チェック
+        if trim_start >= trim_end:
+            print(f"警告: 不正な時間範囲 - 開始: {trim_start:.1f}s, 終了: {trim_end:.1f}s")
+            return df.copy(), {'trimmed': False, 'reason': 'Invalid time range'}
+
+        # データを切り出し
+        mask = (df[time_column] >= trim_start) & (df[time_column] <= trim_end)
+        trimmed_df = df[mask].copy()
+
+        if len(trimmed_df) == 0:
+            print(f"警告: 指定した時間範囲にデータがありません")
+            return df.copy(), {'trimmed': False, 'reason': 'No data in specified range'}
+
+        # インデックスをリセット
+        trimmed_df = trimmed_df.reset_index(drop=True)
+
+        trimmed_length = len(trimmed_df)
+        trimmed_duration = trimmed_df[time_column].max() - trimmed_df[time_column].min()
+
+        trim_info = {
+            'trimmed': True,
+            'original_length': original_length,
+            'trimmed_length': trimmed_length,
+            'original_duration': original_duration,
+            'trimmed_duration': trimmed_duration,
+            'data_start': data_start,
+            'data_end': data_end,
+            'trim_start': trim_start,
+            'trim_end': trim_end,
+            'start_specified': start_time is not None,
+            'end_specified': end_time is not None
+        }
+
+        print(f"  データ切り出し:")
+        print(f"    元データ: {original_length}サンプル ({original_duration:.1f}秒)")
+        print(f"    切り出し範囲: {trim_start:.1f}s - {trim_end:.1f}s")
+        print(f"    切り出し後: {trimmed_length}サンプル ({trimmed_duration:.1f}秒)")
+
+        return trimmed_df, trim_info
+
+    except Exception as e:
+        print(f"データ切り出しエラー: {e}")
+        return df.copy(), {'trimmed': False, 'reason': f'Error: {e}'}
 
 
 def calculate_windowed_correlation(signal1, signal2, window_sec=10.0, fs=60.0):
@@ -235,6 +320,14 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0,
         df = pd.read_csv(filepath)
         print(f"\n統合データを読み込み: {os.path.basename(filepath)}")
         print(f"  - 元データ: {len(df)} samples, {len(df.columns)} columns")
+
+        # データ切り出し処理
+        if DATA_START_TIME is not None or DATA_END_TIME is not None:
+            df, trim_info = trim_data_by_time_range(df, DATA_START_TIME, DATA_END_TIME)
+            if not trim_info['trimmed']:
+                print(f"  - データ切り出し失敗: {trim_info['reason']}")
+        else:
+            print(f"  - データ切り出し: 無効（全データを使用）")
 
         # サンプリング周波数の推定（60Hzと仮定、時間間隔から計算）
         if len(df) > 1:
@@ -1315,6 +1408,14 @@ def main():
 
     print(f"入力パス: {input_path}")
     print(f"ローパスフィルタ周波数: {cutoff_freq}Hz")
+
+    # データ切り出し設定の表示
+    if DATA_START_TIME is not None or DATA_END_TIME is not None:
+        start_str = f'{DATA_START_TIME:.1f}s' if DATA_START_TIME is not None else '開始から'
+        end_str = f'{DATA_END_TIME:.1f}s' if DATA_END_TIME is not None else '終了まで'
+        print(f"データ切り出し: {start_str} - {end_str}")
+    else:
+        print(f"データ切り出し: 無効（全データを使用）")
     print()
 
     # integrated_analysis.csvファイルを検索

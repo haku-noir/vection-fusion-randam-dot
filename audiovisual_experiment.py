@@ -157,7 +157,7 @@ SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
 
 # 試行
-TRIAL_DURATION   = 180.0      # 各試行の刺激掲示時間 [s]
+TRIAL_DURATION   = 179.0      # 各試行の刺激掲示時間 [s]
 ITI              = 1.0       # 刺激間インターバル [s]
 MAX_TRIALS       = 1         # 最大試行回数（デフォルト1回）
 
@@ -1325,7 +1325,6 @@ try:
             # 黒い画面が描画された後にArduinoに刺激検出準備コマンド送信
             print(f"Trial {trial_idx}: 光同期準備 - 刺激検出準備状態にセット")
             light_sync_controller.ready()
-            time.sleep(0.1)  # コマンド送信完了を待機
 
         # ----- ビープ音再生（試行開始） -----
         if USE_BEEP and beep_sound:
@@ -1386,18 +1385,14 @@ try:
                 green_dots.draw()
                 red_dots.draw()
 
-        # 光同期用正方形も描画（初期状態は黒）
+        # 光同期用正方形も描画
         if USE_LIGHT_SYNC:
-            sync_square.fillColor = 'black'
+            sync_square.fillColor = 'white'
             sync_square.draw()
 
         # 初期フレームを表示
         win.flip()
-
-        # ----- 音S刺激開始 -----
-        trial_clock = core.Clock()
-        trial_clock.reset()  # まずクロックをリセット
-        stereo_snd.play()    # 音を再生開始
+        time.sleep(0.2)  # プロジェクターの投影にかかる時間だけ待機
 
         # ----- GVS刺激開始 -----
         if USE_GVS and gvs_controller:
@@ -1411,7 +1406,8 @@ try:
             gvs_controller.start_stimulation(gvs_condition)  # 赤なら同相、緑なら逆相
             time.sleep(0.05)  # GVS開始の確認
 
-        # ----- 音S刺激開始 -----
+        # ----- 音刺激開始 -----
+        stereo_snd.play()    # 音を再生開始
         trial_clock = core.Clock()
         trial_clock.reset()  # まずクロックをリセット
 

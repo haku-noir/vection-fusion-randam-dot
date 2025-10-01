@@ -432,9 +432,40 @@ def save_sway_data(df, output_path, cutoff_freq=3.0):
         return None
 
 
+def calculate_statistical_summary(data):
+    """
+    データの統計サマリーを計算（箱ひげ図用）
+
+    Args:
+        data (array): 数値データ
+
+    Returns:
+        dict: 統計情報
+    """
+    clean_data = data[~np.isnan(data)]
+    if len(clean_data) == 0:
+        return {
+            'mean': np.nan, 'std': np.nan, 'var': np.nan,
+            'q1': np.nan, 'median': np.nan, 'q3': np.nan,
+            'min': np.nan, 'max': np.nan, 'iqr': np.nan
+        }
+
+    return {
+        'mean': np.mean(clean_data),
+        'std': np.std(clean_data),
+        'var': np.var(clean_data),
+        'q1': np.percentile(clean_data, 25),
+        'median': np.percentile(clean_data, 50),
+        'q3': np.percentile(clean_data, 75),
+        'min': np.min(clean_data),
+        'max': np.max(clean_data),
+        'iqr': np.percentile(clean_data, 75) - np.percentile(clean_data, 25)
+    }
+
+
 def calculate_file_correlations(df, session_id, experiment_settings, condition, cutoff_freq=3.0, enable_audio_0_3hz_filter=False):
     """
-    単一ファイルの相関係数を計算してディクショナリで返す
+    単一ファイルの相関係数と統計情報を計算してディクショナリで返す
 
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
@@ -445,7 +476,7 @@ def calculate_file_correlations(df, session_id, experiment_settings, condition, 
         enable_audio_0_3hz_filter (bool): 0.3Hz音響フィルタを有効にするかどうか
 
     Returns:
-        dict: 相関係数と実験情報を含むディクショナリ
+        dict: 相関係数、統計情報、実験情報を含むディクショナリ
     """
     try:
         result = {
@@ -466,9 +497,23 @@ def calculate_file_correlations(df, session_id, experiment_settings, condition, 
         if enable_audio_0_3hz_filter:
             result['audio_corr_0_3hz'] = np.nan
 
-        # ロール変化（angle_change_sway）との相関を計算
+        # ロール変化（angle_change_sway）との相関と統計情報を計算
         if 'angle_change_sway' in df.columns:
             angle_sway = df['angle_change_sway'].values
+
+            # 角度変化の統計情報
+            angle_stats = calculate_statistical_summary(angle_sway)
+            result.update({
+                'angle_mean': angle_stats['mean'],
+                'angle_std': angle_stats['std'],
+                'angle_var': angle_stats['var'],
+                'angle_q1': angle_stats['q1'],
+                'angle_median': angle_stats['median'],
+                'angle_q3': angle_stats['q3'],
+                'angle_min': angle_stats['min'],
+                'angle_max': angle_stats['max'],
+                'angle_iqr': angle_stats['iqr']
+            })
 
             # 音響角度変化との相関
             if 'audio_angle_change_sway' in df.columns:
@@ -489,10 +534,97 @@ def calculate_file_correlations(df, session_id, experiment_settings, condition, 
             if 'green_dot_mean_x_sway' in df.columns:
                 result['green_dot_corr_3hz'] = calculate_overall_correlation(angle_sway, df['green_dot_mean_x_sway'].values)
 
+            # 窓相関の統計情報を計算
+            window_correlations = []
+
+            # 音響窓相関
+            if 'correlation_angle_audio' in df.columns:
+                audio_window_corr = df['correlation_angle_audio'].values
+                audio_corr_stats = calculate_statistical_summary(audio_window_corr)
+                result.update({
+                    'audio_window_corr_mean': audio_corr_stats['mean'],
+                    'audio_window_corr_std': audio_corr_stats['std'],
+                    'audio_window_corr_var': audio_corr_stats['var'],
+                    'audio_window_corr_q1': audio_corr_stats['q1'],
+                    'audio_window_corr_median': audio_corr_stats['median'],
+                    'audio_window_corr_q3': audio_corr_stats['q3'],
+                    'audio_window_corr_min': audio_corr_stats['min'],
+                    'audio_window_corr_max': audio_corr_stats['max'],
+                    'audio_window_corr_iqr': audio_corr_stats['iqr']
+                })
+                window_correlations.extend(audio_window_corr[~np.isnan(audio_window_corr)])
+            else:
+                # 音響窓相関データがない場合のNaN値設定
+                for suffix in ['mean', 'std', 'var', 'q1', 'median', 'q3', 'min', 'max', 'iqr']:
+                    result[f'audio_window_corr_{suffix}'] = np.nan
+
+            # GVS窓相関
+            if 'correlation_angle_gvs' in df.columns:
+                gvs_window_corr = df['correlation_angle_gvs'].values
+                gvs_corr_stats = calculate_statistical_summary(gvs_window_corr)
+                result.update({
+                    'gvs_window_corr_mean': gvs_corr_stats['mean'],
+                    'gvs_window_corr_std': gvs_corr_stats['std'],
+                    'gvs_window_corr_var': gvs_corr_stats['var'],
+                    'gvs_window_corr_q1': gvs_corr_stats['q1'],
+                    'gvs_window_corr_median': gvs_corr_stats['median'],
+                    'gvs_window_corr_q3': gvs_corr_stats['q3'],
+                    'gvs_window_corr_min': gvs_corr_stats['min'],
+                    'gvs_window_corr_max': gvs_corr_stats['max'],
+                    'gvs_window_corr_iqr': gvs_corr_stats['iqr']
+                })
+                window_correlations.extend(gvs_window_corr[~np.isnan(gvs_window_corr)])
+            else:
+                # GVS窓相関データがない場合のNaN値設定
+                for suffix in ['mean', 'std', 'var', 'q1', 'median', 'q3', 'min', 'max', 'iqr']:
+                    result[f'gvs_window_corr_{suffix}'] = np.nan
+
+            # 赤ドット窓相関
+            if 'correlation_angle_red_dot' in df.columns:
+                red_window_corr = df['correlation_angle_red_dot'].values
+                red_corr_stats = calculate_statistical_summary(red_window_corr)
+                result.update({
+                    'red_dot_window_corr_mean': red_corr_stats['mean'],
+                    'red_dot_window_corr_std': red_corr_stats['std'],
+                    'red_dot_window_corr_var': red_corr_stats['var'],
+                    'red_dot_window_corr_q1': red_corr_stats['q1'],
+                    'red_dot_window_corr_median': red_corr_stats['median'],
+                    'red_dot_window_corr_q3': red_corr_stats['q3'],
+                    'red_dot_window_corr_min': red_corr_stats['min'],
+                    'red_dot_window_corr_max': red_corr_stats['max'],
+                    'red_dot_window_corr_iqr': red_corr_stats['iqr']
+                })
+                window_correlations.extend(red_window_corr[~np.isnan(red_window_corr)])
+            else:
+                # 赤ドット窓相関データがない場合のNaN値設定
+                for suffix in ['mean', 'std', 'var', 'q1', 'median', 'q3', 'min', 'max', 'iqr']:
+                    result[f'red_dot_window_corr_{suffix}'] = np.nan
+
+            # 緑ドット窓相関
+            if 'correlation_angle_green_dot' in df.columns:
+                green_window_corr = df['correlation_angle_green_dot'].values
+                green_corr_stats = calculate_statistical_summary(green_window_corr)
+                result.update({
+                    'green_dot_window_corr_mean': green_corr_stats['mean'],
+                    'green_dot_window_corr_std': green_corr_stats['std'],
+                    'green_dot_window_corr_var': green_corr_stats['var'],
+                    'green_dot_window_corr_q1': green_corr_stats['q1'],
+                    'green_dot_window_corr_median': green_corr_stats['median'],
+                    'green_dot_window_corr_q3': green_corr_stats['q3'],
+                    'green_dot_window_corr_min': green_corr_stats['min'],
+                    'green_dot_window_corr_max': green_corr_stats['max'],
+                    'green_dot_window_corr_iqr': green_corr_stats['iqr']
+                })
+                window_correlations.extend(green_window_corr[~np.isnan(green_window_corr)])
+            else:
+                # 緑ドット窓相関データがない場合のNaN値設定
+                for suffix in ['mean', 'std', 'var', 'q1', 'median', 'q3', 'min', 'max', 'iqr']:
+                    result[f'green_dot_window_corr_{suffix}'] = np.nan
+
         return result
 
     except Exception as e:
-        print(f"エラー: 相関係数計算に失敗: {e}")
+        print(f"エラー: 相関係数・統計情報計算に失敗: {e}")
         return None
 
 
@@ -517,18 +649,18 @@ def save_integrated_correlation_summary(correlation_data_list, folder_path, cuto
         df = pd.DataFrame(correlation_data_list)
 
         # カラム順序を整理（audio_corr_0_3hzが存在する場合のみ含める）
-        column_order = ['session_id', 'condition', 'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse', 'data_points',
-                       'audio_corr_3hz']
+        # column_order = ['session_id', 'condition', 'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse', 'data_points',
+        #                'audio_corr_3hz']
 
-        # audio_corr_0_3hzが存在する場合のみ追加
-        if 'audio_corr_0_3hz' in df.columns:
-            column_order.append('audio_corr_0_3hz')
+        # # audio_corr_0_3hzが存在する場合のみ追加
+        # if 'audio_corr_0_3hz' in df.columns:
+        #     column_order.append('audio_corr_0_3hz')
 
-        column_order.extend(['gvs_corr_3hz', 'red_dot_corr_3hz', 'green_dot_corr_3hz'])
+        # column_order.extend(['gvs_corr_3hz', 'red_dot_corr_3hz', 'green_dot_corr_3hz'])
 
-        # 存在するカラムのみ選択
-        available_columns = [col for col in column_order if col in df.columns]
-        df = df[available_columns]
+        # # 存在するカラムのみ選択
+        # available_columns = [col for col in column_order if col in df.columns]
+        # df = df[available_columns]
 
         # CSV保存
         df.to_csv(output_file, index=False)

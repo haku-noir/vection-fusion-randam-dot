@@ -39,11 +39,11 @@ try:
 except ImportError as e:
     print(f"警告: analyze_datasからのインポートに失敗: {e}")
     print("独立実行モードで動作します")
-    
+
     # インポートできない場合のフォールバック関数
     def get_experiment_settings_from_log(experiment_log_path, trial_number=1):
         return {'single_color_dot': False, 'visual_reverse': False, 'audio_reverse': False, 'gvs_reverse': False}
-    
+
     def get_condition_from_experiment_log(experiment_log_path, trial_number=1):
         return 'red'
 
@@ -461,7 +461,7 @@ def calculate_file_correlations(df, session_id, experiment_settings, condition, 
             'red_dot_corr_3hz': np.nan,
             'green_dot_corr_3hz': np.nan
         }
-        
+
         # 0.3Hz音響フィルタが有効な場合のみ追加
         if enable_audio_0_3hz_filter:
             result['audio_corr_0_3hz'] = np.nan
@@ -515,30 +515,30 @@ def save_integrated_correlation_summary(correlation_data_list, folder_path, cuto
 
         # データフレーム作成
         df = pd.DataFrame(correlation_data_list)
-        
+
         # カラム順序を整理（audio_corr_0_3hzが存在する場合のみ含める）
         column_order = ['session_id', 'condition', 'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse', 'data_points',
                        'audio_corr_3hz']
-        
+
         # audio_corr_0_3hzが存在する場合のみ追加
         if 'audio_corr_0_3hz' in df.columns:
             column_order.append('audio_corr_0_3hz')
-        
+
         column_order.extend(['gvs_corr_3hz', 'red_dot_corr_3hz', 'green_dot_corr_3hz'])
-        
+
         # 存在するカラムのみ選択
         available_columns = [col for col in column_order if col in df.columns]
         df = df[available_columns]
-        
+
         # CSV保存
         df.to_csv(output_file, index=False)
-        
+
         print(f"統合相関係数サマリーを保存: {os.path.basename(output_file)}")
         print(f"  - 対象ファイル数: {len(correlation_data_list)}")
         print(f"  - 保存パス: {output_file}")
-        
+
         return output_file
-        
+
     except Exception as e:
         print(f"エラー: 統合相関係数サマリー保存に失敗: {e}")
         return None
@@ -590,7 +590,7 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         axes = list(axes)
 
     data_source = "SCOPE" if is_scope_data else "SYNTH"
-    
+
     # リバース設定の表示文字列を作成
     reverse_indicators = []
     if experiment_settings.get('visual_reverse', False):
@@ -600,9 +600,16 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
     if experiment_settings.get('gvs_reverse', False):
         reverse_indicators.append('GVS反転')
     if experiment_settings.get('single_color_dot', False):
-        target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+        # audiovisual_experimentと同じロジックでタイトル表示条件を決定
+        visual_reverse = experiment_settings.get('visual_reverse', False)
+        if visual_reverse:
+            # VISUAL_REVERSE=Trueの場合、元の条件色を表示
+            target_condition = condition
+        else:
+            # デフォルトでは反対色を表示
+            target_condition = 'green' if condition == 'red' else 'red'
         reverse_indicators.append(f'単色ドット({target_condition})')
-    
+
     # 元の条件と設定情報を含むタイトル
     condition_info = f"条件: {condition}"
     reverse_suffix = f" [{', '.join(reverse_indicators)}]" if reverse_indicators else ""
@@ -658,11 +665,18 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         # 視覚刺激のタイトルにリバース情報を追加
         visual_title_suffix = ""
         if experiment_settings.get('single_color_dot', False):
-            target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+            # audiovisual_experimentと同じロジックでタイトル表示条件を決定
+            visual_reverse = experiment_settings.get('visual_reverse', False)
+            if visual_reverse:
+                # VISUAL_REVERSE=Trueの場合、元の条件色を表示
+                target_condition = condition
+            else:
+                # デフォルトでは反対色を表示
+                target_condition = 'green' if condition == 'red' else 'red'
             visual_title_suffix += f" (単色: {target_condition}ドット)"
         if experiment_settings.get('visual_reverse', False):
             visual_title_suffix += " [視覚反転]"
-        
+
         ax2_1.set_title(f'視覚刺激と角度変化 (身体動揺成分: {cutoff_freq}Hz LPF){visual_title_suffix}')
         ax2_1.grid(True, alpha=0.3)
 
@@ -1087,7 +1101,7 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
     # 実験設定を取得
     experiment_settings = {'single_color_dot': False, 'visual_reverse': False, 'audio_reverse': False, 'gvs_reverse': False}
     condition = 'red'
-    
+
     # experiment_logファイルを探索
     experiment_log_file = None
     try:
@@ -1096,7 +1110,7 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
             if file.startswith(f"{session_id}_experiment_log.csv") or file == 'experiment_log.csv':
                 experiment_log_file = os.path.join(folder_path, file)
                 break
-        
+
         if experiment_log_file and os.path.exists(experiment_log_file):
             experiment_settings = get_experiment_settings_from_log(experiment_log_file)
             condition = get_condition_from_experiment_log(experiment_log_file)
@@ -1192,16 +1206,16 @@ def main():
     # フォルダごとに処理
     total_success_count = 0
     total_file_count = 0
-    
+
     for folder_path, files in folder_groups.items():
         print(f"\n{'='*80}")
         print(f"フォルダ処理: {folder_path}")
         print(f"ファイル数: {len(files)}")
         print(f"{'='*80}")
-        
+
         correlation_data_list = []
         success_count = 0
-        
+
         # フォルダ内の各ファイルを処理
         for filepath in files:
             try:
@@ -1216,12 +1230,12 @@ def main():
             except Exception as e:
                 print(f"エラー: {filepath} の処理に失敗: {e}")
                 total_file_count += 1
-        
+
         # フォルダの統合相関係数サマリーを保存
         if correlation_data_list:
             print(f"\n統合相関係数サマリーを作成中... (フォルダ: {os.path.basename(folder_path)})")
             save_integrated_correlation_summary(correlation_data_list, folder_path, cutoff_freq)
-        
+
         print(f"\nフォルダ処理完了: {os.path.basename(folder_path)}")
         print(f"  - 処理成功: {success_count}/{len(files)}")
 

@@ -552,16 +552,20 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
         print(f"    ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
 
     # single_color_dotモードの処理
+    # audiovisual_experimentに合わせたロジック:
+    # - SINGLE_COLOR_DOT=Trueの場合、デフォルトで反対色のドットを表示
+    # - SINGLE_COLOR_DOT=True かつ VISUAL_REVERSE=Trueの場合、元の条件色のドットを表示
     if experiment_settings.get('single_color_dot', False):
         visual_reverse = experiment_settings.get('visual_reverse', False)
         
-        # visual_reverseが有効な場合、条件を反転
         if visual_reverse:
-            target_condition = 'green' if condition == 'red' else 'red'
-            print(f"    single_color_dotモード: 条件={condition} → visual_reverse適用 → 表示条件={target_condition}")
-        else:
+            # VISUAL_REVERSE=Trueの場合、元の条件色を表示
             target_condition = condition
-            print(f"    single_color_dotモード: 条件={condition} → 表示条件={target_condition}")
+            print(f"    single_color_dotモード: 条件={condition} + visual_reverse=True → 表示条件={target_condition} (元の条件色)")
+        else:
+            # デフォルトでは反対色を表示
+            target_condition = 'green' if condition == 'red' else 'red'
+            print(f"    single_color_dotモード: 条件={condition} → 表示条件={target_condition} (反対色)")
         
         # 対象でない色のドットデータを削除
         if target_condition == 'red':
@@ -575,9 +579,7 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
             columns_to_remove = [col for col in merged_df.columns if col.startswith('red_dot')]
             for col in columns_to_remove:
                 merged_df.drop(columns=[col], inplace=True)
-                print(f"    {col}列を削除（single_color_dot: green）")
-    
-    # ドットデータの変化量を計算（リサンプリング後）
+                print(f"    {col}列を削除（single_color_dot: green）")    # ドットデータの変化量を計算（リサンプリング後）
     # single_color_dotモードの場合は片方のドットデータのみ存在する可能性がある
     if 'red_dot_mean_x' in merged_df.columns:
         merged_df['red_dot_x_change'] = merged_df['red_dot_mean_x'] - merged_df['red_dot_mean_x'].iloc[0]
@@ -712,9 +714,16 @@ def plot_integrated_data(df, session_id, folder_path, folder_type, experiment_se
     if experiment_settings.get('gvs_reverse', False):
         reverse_indicators.append('GVS反転')
     if experiment_settings.get('single_color_dot', False):
-        target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+        # audiovisual_experimentと同じロジックでタイトル表示条件を決定
+        visual_reverse = experiment_settings.get('visual_reverse', False)
+        if visual_reverse:
+            # VISUAL_REVERSE=Trueの場合、元の条件色を表示
+            target_condition = condition
+        else:
+            # デフォルトでは反対色を表示
+            target_condition = 'green' if condition == 'red' else 'red'
         reverse_indicators.append(f'単色ドット({target_condition})')
-    
+
     # 元の条件と設定情報を含むタイトル
     condition_info = f"条件: {condition}"
     reverse_suffix = f" [{', '.join(reverse_indicators)}]" if reverse_indicators else ""
@@ -756,15 +765,22 @@ def plot_integrated_data(df, session_id, folder_path, folder_type, experiment_se
         all_lines = dot_lines + line3
         labels = [l.get_label() for l in all_lines]
         ax2_1.legend(all_lines, labels, loc='upper left')
-        
+
         # 視覚刺激のタイトルにリバース情報を追加
         visual_title_suffix = ""
         if experiment_settings.get('single_color_dot', False):
-            target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+            # audiovisual_experimentと同じロジックでタイトル表示条件を決定
+            visual_reverse = experiment_settings.get('visual_reverse', False)
+            if visual_reverse:
+                # VISUAL_REVERSE=Trueの場合、元の条件色を表示
+                target_condition = condition
+            else:
+                # デフォルトでは反対色を表示
+                target_condition = 'green' if condition == 'red' else 'red'
             visual_title_suffix += f" (単色: {target_condition}ドット)"
         if experiment_settings.get('visual_reverse', False):
             visual_title_suffix += " [視覚反転]"
-        
+
         ax2_1.set_title(f'視覚刺激（ドット位置）と角度変化{visual_title_suffix}')
         ax2_1.grid(True, alpha=0.3)
 
@@ -1117,7 +1133,7 @@ def process_experiment_folder(session_path):
         elif session_id == 'default' and file == 'experiment_log.csv':
             experiment_log_file = os.path.join(folder_path, file)
             break
-    
+
     condition = 'red'  # デフォルト
     if experiment_log_file:
         condition = get_condition_from_experiment_log(experiment_log_file)

@@ -53,18 +53,20 @@ def find_experiment_folders(input_path):
 
 def get_folder_type(folder_path):
     """
-    フォルダのタイプ（gvs, audio, vis）を判定する
+    フォルダのタイプ（gvs, audio, vis, all）を判定する
 
     Args:
         folder_path (str): フォルダのパス
 
     Returns:
-        str: フォルダタイプ（'gvs', 'audio', 'vis', 'unknown'）
+        str: フォルダタイプ（'gvs', 'audio', 'vis', 'all', 'unknown'）
     """
     folder_name = os.path.basename(folder_path).lower()
     parent_folder = os.path.basename(os.path.dirname(folder_path)).lower()
 
-    if 'gvs' in folder_name or 'gvs' in parent_folder:
+    if 'all' in folder_name or 'all' in parent_folder:
+        return 'all'
+    elif 'gvs' in folder_name or 'gvs' in parent_folder:
         return 'gvs'
     elif 'audio' in folder_name or 'audio' in parent_folder:
         return 'audio'
@@ -123,16 +125,16 @@ def find_data_files(folder_path, condition='red'):
             data_files['accel_sensor'] = os.path.join(folder_path, file)
 
     # フォルダタイプ別の追加ファイル（タイムスタンプ付きパターンも含む）
-    if folder_type == 'gvs':
+    if folder_type == 'gvs' or folder_type == 'all':
         for file in files:
-            if (f'dac_output_{condition}.csv' in file or 
+            if (f'dac_output_{condition}.csv' in file or
                 re.match(rf'\d{{8}}_\d{{6}}_dac_output_{condition}\.csv$', file)):
                 data_files['dac_output'] = os.path.join(folder_path, file)
 
-    elif folder_type == 'audio':
+    if folder_type == 'audio' or folder_type == 'all':
         for file in files:
-            if (f'audio_{condition}_integrated_analysis.csv' in file or f'audio_trial_1.csv' in file or 
-                re.match(rf'\d{{8}}_\d{{6}}_audio.*{condition}.*\.csv$', file) or 
+            if (f'audio_{condition}_integrated_analysis.csv' in file or f'audio_trial_1.csv' in file or
+                re.match(rf'\d{{8}}_\d{{6}}_audio.*{condition}.*\.csv$', file) or
                 re.match(r'\d{8}_\d{6}_audio.*trial_1\.csv$', file)):
                 data_files['audio'] = os.path.join(folder_path, file)
 
@@ -216,15 +218,15 @@ def find_session_data_files(folder_path, session_id, condition='red'):
             # タイムスタンプ付きファイル
             if file.startswith(f"{session_id}_experiment_log.csv"):
                 data_files['experiment_log'] = os.path.join(folder_path, file)
-            elif file.startswith(f"{session_id}_random_dot_trial_1.csv") or file.startswith(f"{session_id}_random_dot_data_trial_1.csv"):
+            if file.startswith(f"{session_id}_random_dot_trial_1.csv") or file.startswith(f"{session_id}_random_dot_data_trial_1.csv"):
                 data_files['random_dot'] = os.path.join(folder_path, file)
-            elif (file.startswith(f"{session_id}_accel_sensor_trial_1.csv") or 
+            if (file.startswith(f"{session_id}_accel_sensor_trial_1.csv") or 
                   file.startswith(f"{session_id}_accel_log_trial_1.csv") or 
                   file.startswith(f"{session_id}_accel_log_serial_trial_1.csv")):
                 data_files['accel_sensor'] = os.path.join(folder_path, file)
-            elif folder_type == 'gvs' and file.startswith(f"{session_id}_dac_output_{condition}.csv"):
+            if (folder_type == 'gvs' or folder_type == 'all') and file.startswith(f"{session_id}_dac_output_{condition}.csv"):
                 data_files['dac_output'] = os.path.join(folder_path, file)
-            elif folder_type == 'audio' and (file.startswith(f"{session_id}_audio_trial_1.csv") or 
+            if (folder_type == 'audio' or folder_type == 'all') and (file.startswith(f"{session_id}_audio_trial_1.csv") or 
                                              file.startswith(f"{session_id}_audio_{condition}") or
                                              file == f"audio_{condition}_integrated_analysis.csv"):
                 data_files['audio'] = os.path.join(folder_path, file)
@@ -234,7 +236,7 @@ def find_session_data_files(folder_path, session_id, condition='red'):
                 data_files['experiment_log'] = os.path.join(folder_path, file)
             elif 'random_dot_data_trial_1.csv' in file or 'random_dot_trial_1.csv' in file:
                 data_files['random_dot'] = os.path.join(folder_path, file)
-            elif ('accel_log_serial_trial_1.csv' in file or 'accel_log_trial_1.csv' in file or 
+            elif ('accel_log_serial_trial_1.csv' in file or 'accel_log_trial_1.csv' in file or
                   'accel_sensor_trial_1.csv' in file):
                 data_files['accel_sensor'] = os.path.join(folder_path, file)
 
@@ -242,14 +244,14 @@ def find_session_data_files(folder_path, session_id, condition='red'):
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # GVSフォルダのdac_outputファイル
-    if folder_type == 'gvs':
+    if folder_type == 'gvs' or folder_type == 'all':
         dac_file = os.path.join(script_dir, f'dac_output_{condition}.csv')
         if os.path.exists(dac_file):
             data_files['dac_output'] = dac_file
             print(f"  共通ファイルを使用: dac_output_{condition}.csv")
 
     # オーディオフォルダのaudioファイル
-    elif folder_type == 'audio':
+    if folder_type == 'audio' or folder_type == 'all':
         audio_file = os.path.join(script_dir, f'audio_{condition}_integrated_analysis.csv')
         if os.path.exists(audio_file):
             data_files['audio'] = audio_file
@@ -472,7 +474,7 @@ def merge_experiment_data(dataframes, folder_type):
         print(f"    ドットX座標変化量を計算")
 
     # 追加データのリサンプリング統合
-    if folder_type == 'gvs' and 'dac_output' in dataframes:
+    if (folder_type == 'gvs' or folder_type == 'all') and 'dac_output' in dataframes:
         dac_df = dataframes['dac_output']
         print(f"\n  GVS(DAC)データのリサンプリング (samples: {len(dac_df)}):")
 
@@ -489,7 +491,7 @@ def merge_experiment_data(dataframes, folder_type):
             # DACデータを統合（dac25_outputとdac26_outputからgvs_dac_outputを作成）
             dac25_values = None
             dac26_values = None
-            
+
             for col, values in resampled_dac.items():
                 if col == 'dac25_output':
                     dac25_values = values
@@ -497,7 +499,7 @@ def merge_experiment_data(dataframes, folder_type):
                     dac26_values = values
                 elif col != 'time_sec':
                     merged_df[col] = values
-            
+
             # PIN25(+方向)とPIN26(-方向)を結合してGVS出力を作成
             if dac25_values is not None and dac26_values is not None:
                 merged_df['gvs_dac_output'] = dac25_values - dac26_values
@@ -513,7 +515,7 @@ def merge_experiment_data(dataframes, folder_type):
         else:
             print(f"    警告: 'time_sec'列が見つかりません")
 
-    elif folder_type == 'audio' and 'audio' in dataframes:
+    if (folder_type == 'audio' or folder_type == 'all') and 'audio' in dataframes:
         audio_df = dataframes['audio']
         print(f"\n  音響データのリサンプリング (samples: {len(audio_df)}):")
 
@@ -563,14 +565,16 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
     plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
 
     # フォルダタイプに応じてサブプロット数を決定
-    is_visual_only = folder_type not in ['gvs', 'audio'] or (
+    is_vision_only = folder_type not in ['gvs', 'audio', 'all'] or (
         folder_type == 'gvs' and 'gvs_dac_output' not in df.columns
     ) or (
         folder_type == 'audio' and 'audio_angle_change' not in df.columns
+    ) or (
+        folder_type == 'all' and ('gvs_dac_output' not in df.columns or 'audio_angle_change' not in df.columns)
     )
 
-    subplot_count = 2 if is_visual_only else 3
-    fig, axes = plt.subplots(subplot_count, 1, figsize=(15, 8 if is_visual_only else 12))
+    subplot_count = 2 if is_vision_only else 3
+    fig, axes = plt.subplots(subplot_count, 1, figsize=(15, 8 if is_vision_only else 12))
 
     # axesを常にリストとして扱う
     if subplot_count == 2:
@@ -612,12 +616,97 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
         ax2_1.grid(True, alpha=0.3)
 
         # 視覚刺激のみの場合はここでX軸ラベルを追加
-        if is_visual_only:
+        if is_vision_only:
             ax2_1.set_xlabel('時間 (秒)')
 
     # サブプロット3: 刺激データと角度変化の重ね合わせ（視覚刺激のみでない場合のみ）
-    if not is_visual_only:
-        if folder_type == 'gvs' and 'gvs_dac_output' in df.columns and 'angle_change' in df.columns:
+    if not is_vision_only:
+        if folder_type == 'all' and 'angle_change' in df.columns:
+            ax3_1 = axes[2]
+            all_lines = []
+
+            # 両方のデータがある場合は3軸表示、そうでなければ2軸表示
+            if 'gvs_dac_output' in df.columns and 'audio_angle_change' in df.columns:
+                # GVS出力（左軸）
+                line1 = ax3_1.plot(df['psychopy_time'], df['gvs_dac_output'], color='blue', alpha=0.7, label='GVS出力')
+                ax3_1.set_ylabel('GVS出力値', color='blue')
+                ax3_1.tick_params(axis='y', labelcolor='blue')
+                all_lines.extend(line1)
+
+                # 音響角度変化（中軸 - 右軸の左側に配置）
+                ax3_2 = ax3_1.twinx()
+                line2 = ax3_2.plot(df['psychopy_time'], df['audio_angle_change'], color='purple', alpha=0.7, label='音響ロール変化')
+                ax3_2.set_ylabel('音響角度変化 (度)', color='purple')
+                ax3_2.tick_params(axis='y', labelcolor='purple')
+                all_lines.extend(line2)
+
+                # 姿勢角度変化（右軸 - 最右側に配置）
+                ax3_3 = ax3_1.twinx()
+                # 右軸を右側にオフセット
+                ax3_3.spines['right'].set_position(('outward', 60))
+                line3 = ax3_3.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='姿勢ロール変化')
+                ax3_3.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+                ax3_3.set_ylabel('姿勢角度変化 (度)', color='orange')
+                ax3_3.tick_params(axis='y', labelcolor='orange')
+                all_lines.extend(line3)
+
+                # 音響角度変化と姿勢角度変化の軸範囲を一致させる
+                angle_min = min(df['audio_angle_change'].min(), df['angle_change'].min())
+                angle_max = max(df['audio_angle_change'].max(), df['angle_change'].max())
+                angle_range = max(abs(angle_min), abs(angle_max))
+                axis_limit = angle_range * 1.1  # 10%のマージンを追加
+                ax3_2.set_ylim(-axis_limit, axis_limit)
+                ax3_3.set_ylim(-axis_limit, axis_limit)
+
+                ax3_1.set_title('統合刺激（GVS + 音響）と姿勢角度変化')
+
+            elif 'gvs_dac_output' in df.columns:
+                # GVS出力のみ（左軸）
+                line1 = ax3_1.plot(df['psychopy_time'], df['gvs_dac_output'], color='blue', alpha=0.7, label='GVS出力')
+                ax3_1.set_ylabel('GVS出力値', color='blue')
+                ax3_1.tick_params(axis='y', labelcolor='blue')
+                all_lines.extend(line1)
+
+                # 角度変化（右軸）
+                ax3_2 = ax3_1.twinx()
+                line2 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='姿勢ロール変化')
+                ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+                ax3_2.set_ylabel('姿勢角度変化 (度)', color='orange')
+                ax3_2.tick_params(axis='y', labelcolor='orange')
+                all_lines.extend(line2)
+
+                ax3_1.set_title('GVS刺激と姿勢角度変化')
+
+            elif 'audio_angle_change' in df.columns:
+                # 音響角度変化のみ（左軸）
+                line1 = ax3_1.plot(df['psychopy_time'], df['audio_angle_change'], color='purple', alpha=0.7, label='音響ロール変化')
+                ax3_1.set_ylabel('音響角度変化 (度)', color='purple')
+                ax3_1.tick_params(axis='y', labelcolor='purple')
+                all_lines.extend(line1)
+
+                # 姿勢角度変化（右軸）
+                ax3_2 = ax3_1.twinx()
+                line2 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='姿勢ロール変化')
+                ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+                ax3_2.set_ylabel('姿勢角度変化 (度)', color='orange')
+                ax3_2.tick_params(axis='y', labelcolor='orange')
+                all_lines.extend(line2)
+
+                # 音響角度変化と姿勢角度変化の軸範囲を一致させる
+                angle_min = min(df['audio_angle_change'].min(), df['angle_change'].min())
+                angle_max = max(df['audio_angle_change'].max(), df['angle_change'].max())
+                angle_range = max(abs(angle_min), abs(angle_max))
+                axis_limit = angle_range * 1.1  # 10%のマージンを追加
+                ax3_1.set_ylim(-axis_limit, axis_limit)
+                ax3_2.set_ylim(-axis_limit, axis_limit)
+
+                ax3_1.set_title('音響刺激と姿勢角度変化')
+
+            # 凡例を結合
+            labels = [l.get_label() for l in all_lines]
+            ax3_1.legend(all_lines, labels, loc='upper left')
+
+        elif folder_type == 'gvs' and 'gvs_dac_output' in df.columns and 'angle_change' in df.columns:
             ax3_1 = axes[2]
             # GVS出力（左軸）
             line1 = ax3_1.plot(df['psychopy_time'], df['gvs_dac_output'], color='blue', alpha=0.7, label='GVS出力')
@@ -637,35 +726,34 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
             ax3_1.legend(all_lines, labels, loc='upper left')
             ax3_1.set_title('GVS刺激と角度変化の重ね合わせ')
 
-        elif folder_type == 'audio' and 'angle_change' in df.columns:
+        elif folder_type == 'audio' and 'audio_angle_change' in df.columns and 'angle_change' in df.columns:
             ax3_1 = axes[2]
 
-            # 音響データ（audio_angle_change）がある場合はプロットする
-            if 'audio_angle_change' in df.columns:
-                # 音響角度変化（左軸）
-                line1 = ax3_1.plot(df['psychopy_time'], df['audio_angle_change'], color='blue', alpha=0.7, label='音響ロール変化')
-                ax3_1.set_ylabel('音響角度変化 (度)', color='blue')
-                ax3_1.tick_params(axis='y', labelcolor='blue')
+            # 音響角度変化（左軸）
+            line1 = ax3_1.plot(df['psychopy_time'], df['audio_angle_change'], color='blue', alpha=0.7, label='音響ロール変化')
+            ax3_1.set_ylabel('音響角度変化 (度)', color='blue')
+            ax3_1.tick_params(axis='y', labelcolor='blue')
 
-                # 姿勢角度変化（右軸）
-                ax3_2 = ax3_1.twinx()
-                line2 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='姿勢ロール変化')
-                ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
-                ax3_2.set_ylabel('姿勢角度変化 (度)', color='orange')
-                ax3_2.tick_params(axis='y', labelcolor='orange')
+            # 姿勢角度変化（右軸）
+            ax3_2 = ax3_1.twinx()
+            line2 = ax3_2.plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, alpha=0.8, label='姿勢ロール変化')
+            ax3_2.axhline(y=0, color='orange', linestyle='--', alpha=0.5)
+            ax3_2.set_ylabel('姿勢角度変化 (度)', color='orange')
+            ax3_2.tick_params(axis='y', labelcolor='orange')
 
-                # 凡例を結合
-                all_lines = line1 + line2
-                labels = [l.get_label() for l in all_lines]
-                ax3_1.legend(all_lines, labels, loc='upper left')
-                ax3_1.set_title('音響刺激（角度変化）と姿勢角度変化の比較')
-            else:
-                # 音響データがない場合は姿勢角度変化のみ
-                axes[2].plot(df['psychopy_time'], df['angle_change'], color='orange', linewidth=2, label='姿勢ロール変化')
-                axes[2].axhline(y=0, color='black', linestyle='--', alpha=0.5)
-                axes[2].set_title('音響刺激と角度変化\n（音響データなし）')
-                axes[2].set_ylabel('角度変化 (度)')
-                axes[2].legend()
+            # 音響角度変化と姿勢角度変化の軸範囲を一致させる
+            angle_min = min(df['audio_angle_change'].min(), df['angle_change'].min())
+            angle_max = max(df['audio_angle_change'].max(), df['angle_change'].max())
+            angle_range = max(abs(angle_min), abs(angle_max))
+            axis_limit = angle_range * 1.1  # 10%のマージンを追加
+            ax3_1.set_ylim(-axis_limit, axis_limit)
+            ax3_2.set_ylim(-axis_limit, axis_limit)
+
+            # 凡例を結合
+            all_lines = line1 + line2
+            labels = [l.get_label() for l in all_lines]
+            ax3_1.legend(all_lines, labels, loc='upper left')
+            ax3_1.set_title('音響刺激（角度変化）と姿勢角度変化の比較')
 
         # 3番目のサブプロットがある場合のX軸ラベル設定
         axes[2].set_xlabel('時間 (秒)')
@@ -852,8 +940,8 @@ def process_experiment_folder(session_path):
 
     # データの統合処理
     folder_type = get_folder_type(folder_path)
-    has_dac_output = 'dac_output' in dataframes
-    has_audio = 'audio' in dataframes and folder_type == 'audio'
+    has_dac_output = 'dac_output' in dataframes and (folder_type == 'gvs' or folder_type == 'all')
+    has_audio = 'audio' in dataframes and (folder_type == 'audio' or folder_type == 'all')
 
     # 統合データフレームの作成
     integrated_df = merge_experiment_data(dataframes, folder_type)

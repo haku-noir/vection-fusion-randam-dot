@@ -96,6 +96,45 @@ def get_condition_from_experiment_log(experiment_log_path, trial_number=1):
         print(f"experiment_logの読み込みエラー: {e}")
         return 'unknown'
 
+def get_reverse_settings_from_experiment_log(experiment_log_path, trial_number=1):
+    """
+    experiment_logファイルから反転設定（audio_reverse, gvs_reverse）を取得する
+
+    Args:
+        experiment_log_path (str): experiment_logファイルのパス
+        trial_number (int): 試行番号（デフォルト1）
+
+    Returns:
+        dict: 反転設定（'audio_reverse': bool, 'gvs_reverse': bool）
+    """
+    try:
+        df = pd.read_csv(experiment_log_path)
+        if not df.empty:
+            # 指定された試行があるかチェック
+            trial_data = df[df['trial'] == trial_number] if 'trial' in df.columns and len(df[df['trial'] == trial_number]) > 0 else df
+
+            # 最初の行のデータを使用
+            if not trial_data.empty:
+                row = trial_data.iloc[0]
+                audio_reverse = row.get('audio_reverse', False)
+                gvs_reverse = row.get('gvs_reverse', False)
+
+                # 文字列の場合をboolに変換
+                if isinstance(audio_reverse, str):
+                    audio_reverse = audio_reverse.lower() in ['true', '1', 'yes']
+                if isinstance(gvs_reverse, str):
+                    gvs_reverse = gvs_reverse.lower() in ['true', '1', 'yes']
+
+                return {
+                    'audio_reverse': bool(audio_reverse),
+                    'gvs_reverse': bool(gvs_reverse)
+                }
+
+        return {'audio_reverse': False, 'gvs_reverse': False}
+    except Exception as e:
+        print(f"experiment_logの反転設定読み込みエラー: {e}")
+        return {'audio_reverse': False, 'gvs_reverse': False}
+
 def find_data_files(folder_path, condition='red'):
     """
     フォルダ内から必要なデータファイルを探索する
@@ -179,10 +218,12 @@ def load_integrated_data(session_path):
         return {}
 
     condition = get_condition_from_experiment_log(experiment_log_file)
+    reverse_settings = get_reverse_settings_from_experiment_log(experiment_log_file)
     print(f"フォルダ: {os.path.basename(folder_path)}, 条件: {condition}, タイプ: {get_folder_type(folder_path)}, セッション: {session_id}")
+    print(f"反転設定: audio_reverse={reverse_settings['audio_reverse']}, gvs_reverse={reverse_settings['gvs_reverse']}")
 
     # 必要なファイルを探索（セッション固有）
-    data_files = find_session_data_files(folder_path, session_id, condition)
+    data_files = find_session_data_files(folder_path, session_id, condition, reverse_settings)
 
     # データを読み込み
     dataframes = {}
@@ -196,7 +237,7 @@ def load_integrated_data(session_path):
 
     return dataframes
 
-def find_session_data_files(folder_path, session_id, condition='red'):
+def find_session_data_files(folder_path, session_id, condition='red', reverse_settings=None):
     """
     セッション固有のデータファイルを探索する
 
@@ -204,13 +245,33 @@ def find_session_data_files(folder_path, session_id, condition='red'):
         folder_path (str): 検索するフォルダのパス
         session_id (str): セッションID（タイムスタンプ）
         condition (str): 条件（'red' or 'green'）
+        reverse_settings (dict): 反転設定（audio_reverse, gvs_reverse）
 
     Returns:
         dict: 見つかったファイルのパス辞書
     """
+    if reverse_settings is None:
+        reverse_settings = {'audio_reverse': False, 'gvs_reverse': False}
+
     files = os.listdir(folder_path)
     data_files = {}
     folder_type = get_folder_type(folder_path)
+
+    # 反転設定に基づいて実際に読み込む条件を決定
+    def get_effective_condition(original_condition, is_reversed):
+        if is_reversed:
+            return 'green' if original_condition == 'red' else 'red'
+        return original_condition
+
+    # 各データタイプに対する有効な条件を計算
+    audio_condition = get_effective_condition(condition, reverse_settings.get('audio_reverse', False))
+    gvs_condition = get_effective_condition(condition, reverse_settings.get('gvs_reverse', False))
+
+    print(f"  オリジナル条件: {condition}")
+    if reverse_settings.get('audio_reverse', False):
+        print(f"  音響データ条件: {audio_condition} (反転)")
+    if reverse_settings.get('gvs_reverse', False):
+        print(f"  GVSデータ条件: {gvs_condition} (反転)")
 
     # セッション固有のファイルを探索
     for file in files:
@@ -224,11 +285,11 @@ def find_session_data_files(folder_path, session_id, condition='red'):
                   file.startswith(f"{session_id}_accel_log_trial_1.csv") or 
                   file.startswith(f"{session_id}_accel_log_serial_trial_1.csv")):
                 data_files['accel_sensor'] = os.path.join(folder_path, file)
-            if (folder_type == 'gvs' or folder_type == 'all') and file.startswith(f"{session_id}_dac_output_{condition}.csv"):
+            if (folder_type == 'gvs' or folder_type == 'all') and file.startswith(f"{session_id}_dac_output_{gvs_condition}.csv"):
                 data_files['dac_output'] = os.path.join(folder_path, file)
             if (folder_type == 'audio' or folder_type == 'all') and (file.startswith(f"{session_id}_audio_trial_1.csv") or 
-                                             file.startswith(f"{session_id}_audio_{condition}") or
-                                             file == f"audio_{condition}_integrated_analysis.csv"):
+                                             file.startswith(f"{session_id}_audio_{audio_condition}") or
+                                             file == f"audio_{audio_condition}_integrated_analysis.csv"):
                 data_files['audio'] = os.path.join(folder_path, file)
         else:
             # タイムスタンプなしファイル
@@ -245,17 +306,17 @@ def find_session_data_files(folder_path, session_id, condition='red'):
 
     # GVSフォルダのdac_outputファイル
     if folder_type == 'gvs' or folder_type == 'all':
-        dac_file = os.path.join(script_dir, f'dac_output_{condition}.csv')
+        dac_file = os.path.join(script_dir, f'dac_output_{gvs_condition}.csv')
         if os.path.exists(dac_file):
             data_files['dac_output'] = dac_file
-            print(f"  共通ファイルを使用: dac_output_{condition}.csv")
+            print(f"  共通ファイルを使用: dac_output_{gvs_condition}.csv")
 
     # オーディオフォルダのaudioファイル
     if folder_type == 'audio' or folder_type == 'all':
-        audio_file = os.path.join(script_dir, f'audio_{condition}_integrated_analysis.csv')
+        audio_file = os.path.join(script_dir, f'audio_{audio_condition}_integrated_analysis.csv')
         if os.path.exists(audio_file):
             data_files['audio'] = audio_file
-            print(f"  共通ファイルを使用: audio_{condition}_integrated_analysis.csv")
+            print(f"  共通ファイルを使用: audio_{audio_condition}_integrated_analysis.csv")
 
     return data_files
 

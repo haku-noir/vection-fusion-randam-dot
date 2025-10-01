@@ -31,12 +31,21 @@ try:
     from analyze_datas import (
         get_folder_type,
         plot_integrated_data,
-        save_angle_data_to_csv
+        save_angle_data_to_csv,
+        get_experiment_settings_from_log,
+        get_condition_from_experiment_log
     )
     print("analyze_datasから共通関数をインポートしました")
 except ImportError as e:
     print(f"警告: analyze_datasからのインポートに失敗: {e}")
     print("独立実行モードで動作します")
+    
+    # インポートできない場合のフォールバック関数
+    def get_experiment_settings_from_log(experiment_log_path, trial_number=1):
+        return {'single_color_dot': False, 'visual_reverse': False, 'audio_reverse': False, 'gvs_reverse': False}
+    
+    def get_condition_from_experiment_log(experiment_log_path, trial_number=1):
+        return 'red'
 
 ENABLE_AUDIO_FILTER = False
 
@@ -523,7 +532,7 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
         return None
 
 
-def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is_scope_data=False):
+def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is_scope_data=False, experiment_settings=None, condition='red'):
     """
     身体動揺データのグラフを作成
 
@@ -534,7 +543,11 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         folder_type (str): フォルダタイプ
         cutoff_freq (float): 使用したカットオフ周波数
         is_scope_data (bool): オシロスコープデータかどうか
+        experiment_settings (dict): 実験設定（single_color_dot, visual_reverse等）
+        condition (str): 実験条件（'red' or 'green'）
     """
+    if experiment_settings is None:
+        experiment_settings = {'single_color_dot': False, 'visual_reverse': False, 'audio_reverse': False, 'gvs_reverse': False}
     if df is None or df.empty:
         print("グラフ作成用のデータがありません")
         return
@@ -565,7 +578,23 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         axes = list(axes)
 
     data_source = "SCOPE" if is_scope_data else "SYNTH"
-    fig.suptitle(f'身体動揺解析 ({cutoff_freq}Hz LPF) - {folder_type.upper()} Session: {session_id} [{data_source}]', fontsize=16)
+    
+    # リバース設定の表示文字列を作成
+    reverse_indicators = []
+    if experiment_settings.get('visual_reverse', False):
+        reverse_indicators.append('視覚反転')
+    if experiment_settings.get('audio_reverse', False):
+        reverse_indicators.append('音響反転')
+    if experiment_settings.get('gvs_reverse', False):
+        reverse_indicators.append('GVS反転')
+    if experiment_settings.get('single_color_dot', False):
+        target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+        reverse_indicators.append(f'単色ドット({target_condition})')
+    
+    # 元の条件と設定情報を含むタイトル
+    condition_info = f"条件: {condition}"
+    reverse_suffix = f" [{', '.join(reverse_indicators)}]" if reverse_indicators else ""
+    fig.suptitle(f'身体動揺解析 ({cutoff_freq}Hz LPF) - {folder_type.upper()} ({condition_info}) Session: {session_id} [{data_source}]{reverse_suffix}', fontsize=16)
 
     # サブプロット1: 加速度データ（身体動揺成分）
     if 'accel_x_sway' in df.columns:
@@ -584,15 +613,21 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
     axes[0].grid(True, alpha=0.3)
 
     # サブプロット2: 視覚刺激と角度変化の重ね合わせ（身体動揺成分）
-    if ('red_dot_mean_x_sway' in df.columns and 'green_dot_mean_x_sway' in df.columns and 
+    # single_color_dotモードでは片方のドットデータのみ存在する可能性がある
+    if (('red_dot_mean_x_sway' in df.columns or 'green_dot_mean_x_sway' in df.columns) and 
         'angle_change_sway' in df.columns):
 
         ax2_1 = axes[1]
         # ドット位置（身体動揺成分、左軸）
-        line1 = ax2_1.plot(df['psychopy_time'], df['red_dot_mean_x_sway'], 
-                          color='red', alpha=0.7, label='赤ドットX座標', linewidth=1.5)
-        line2 = ax2_1.plot(df['psychopy_time'], df['green_dot_mean_x_sway'], 
-                          color='green', alpha=0.7, label='緑ドットX座標', linewidth=1.5)
+        dot_lines = []
+        if 'red_dot_mean_x_sway' in df.columns:
+            line1 = ax2_1.plot(df['psychopy_time'], df['red_dot_mean_x_sway'], 
+                              color='red', alpha=0.7, label='赤ドットX座標', linewidth=1.5)
+            dot_lines.extend(line1)
+        if 'green_dot_mean_x_sway' in df.columns:
+            line2 = ax2_1.plot(df['psychopy_time'], df['green_dot_mean_x_sway'], 
+                              color='green', alpha=0.7, label='緑ドットX座標', linewidth=1.5)
+            dot_lines.extend(line2)
         ax2_1.set_ylabel('X座標 (pixel)', color='black')
         ax2_1.tick_params(axis='y', labelcolor='black')
 
@@ -605,10 +640,18 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         ax2_2.tick_params(axis='y', labelcolor='orange')
 
         # 凡例を結合
-        lines = line1 + line2 + line3
-        labels = [l.get_label() for l in lines]
-        ax2_1.legend(lines, labels, loc='upper left')
-        ax2_1.set_title(f'視覚刺激と角度変化 (身体動揺成分: {cutoff_freq}Hz LPF)')
+        all_lines = dot_lines + line3
+        labels = [l.get_label() for l in all_lines]
+        ax2_1.legend(all_lines, labels, loc='upper left')
+        # 視覚刺激のタイトルにリバース情報を追加
+        visual_title_suffix = ""
+        if experiment_settings.get('single_color_dot', False):
+            target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+            visual_title_suffix += f" (単色: {target_condition}ドット)"
+        if experiment_settings.get('visual_reverse', False):
+            visual_title_suffix += " [視覚反転]"
+        
+        ax2_1.set_title(f'視覚刺激と角度変化 (身体動揺成分: {cutoff_freq}Hz LPF){visual_title_suffix}')
         ax2_1.grid(True, alpha=0.3)
 
     # サブプロット3: 刺激データと角度変化の重ね合わせ（身体動揺成分）
@@ -1029,6 +1072,29 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
 
     print(f"フォルダタイプ: {folder_type}")
 
+    # 実験設定を取得
+    experiment_settings = {'single_color_dot': False, 'visual_reverse': False, 'audio_reverse': False, 'gvs_reverse': False}
+    condition = 'red'
+    
+    # experiment_logファイルを探索
+    experiment_log_file = None
+    try:
+        target_files = os.listdir(folder_path)
+        for file in target_files:
+            if file.startswith(f"{session_id}_experiment_log.csv") or file == 'experiment_log.csv':
+                experiment_log_file = os.path.join(folder_path, file)
+                break
+        
+        if experiment_log_file and os.path.exists(experiment_log_file):
+            experiment_settings = get_experiment_settings_from_log(experiment_log_file)
+            condition = get_condition_from_experiment_log(experiment_log_file)
+            print(f"実験設定: {experiment_settings}")
+            print(f"実験条件: {condition}")
+        else:
+            print("experiment_logファイルが見つかりません - デフォルト設定を使用")
+    except Exception as e:
+        print(f"実験設定の読み込みエラー: {e} - デフォルト設定を使用")
+
     # データを読み込み・フィルタ処理
     filtered_df = load_and_filter_integrated_data(filepath, cutoff_freq,
                                                  enable_audio_0_3hz_filter,
@@ -1045,7 +1111,7 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
         # グラフを作成・保存
         if sway_file_path:
             print("身体動揺解析グラフ（相関係数含む）を作成中...")
-            plot_sway_data(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data)
+            plot_sway_data(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data, experiment_settings, condition)
 
         return True
     else:

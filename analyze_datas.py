@@ -96,16 +96,16 @@ def get_condition_from_experiment_log(experiment_log_path, trial_number=1):
         print(f"experiment_logの読み込みエラー: {e}")
         return 'unknown'
 
-def get_reverse_settings_from_experiment_log(experiment_log_path, trial_number=1):
+def get_experiment_settings_from_log(experiment_log_path, trial_number=1):
     """
-    experiment_logファイルから反転設定（audio_reverse, gvs_reverse）を取得する
+    experiment_logファイルから実験設定（audio_reverse, gvs_reverse, visual_reverse, single_color_dot）を取得する
 
     Args:
         experiment_log_path (str): experiment_logファイルのパス
         trial_number (int): 試行番号（デフォルト1）
 
     Returns:
-        dict: 反転設定（'audio_reverse': bool, 'gvs_reverse': bool）
+        dict: 実験設定（'audio_reverse': bool, 'gvs_reverse': bool, 'visual_reverse': bool, 'single_color_dot': bool）
     """
     try:
         df = pd.read_csv(experiment_log_path)
@@ -118,22 +118,41 @@ def get_reverse_settings_from_experiment_log(experiment_log_path, trial_number=1
                 row = trial_data.iloc[0]
                 audio_reverse = row.get('audio_reverse', False)
                 gvs_reverse = row.get('gvs_reverse', False)
+                visual_reverse = row.get('visual_reverse', False)
+                single_color_dot = row.get('single_color_dot', False)
 
                 # 文字列の場合をboolに変換
                 if isinstance(audio_reverse, str):
                     audio_reverse = audio_reverse.lower() in ['true', '1', 'yes']
                 if isinstance(gvs_reverse, str):
                     gvs_reverse = gvs_reverse.lower() in ['true', '1', 'yes']
+                if isinstance(visual_reverse, str):
+                    visual_reverse = visual_reverse.lower() in ['true', '1', 'yes']
+                if isinstance(single_color_dot, str):
+                    single_color_dot = single_color_dot.lower() in ['true', '1', 'yes']
 
                 return {
                     'audio_reverse': bool(audio_reverse),
-                    'gvs_reverse': bool(gvs_reverse)
+                    'gvs_reverse': bool(gvs_reverse),
+                    'visual_reverse': bool(visual_reverse),
+                    'single_color_dot': bool(single_color_dot)
                 }
 
-        return {'audio_reverse': False, 'gvs_reverse': False}
+        return {'audio_reverse': False, 'gvs_reverse': False, 'visual_reverse': False, 'single_color_dot': False}
     except Exception as e:
-        print(f"experiment_logの反転設定読み込みエラー: {e}")
-        return {'audio_reverse': False, 'gvs_reverse': False}
+        print(f"experiment_logの実験設定読み込みエラー: {e}")
+        return {'audio_reverse': False, 'gvs_reverse': False, 'visual_reverse': False, 'single_color_dot': False}
+
+def get_reverse_settings_from_experiment_log(experiment_log_path, trial_number=1):
+    """
+    後方互換性のための関数（get_experiment_settings_from_logのラッパー）
+    """
+    settings = get_experiment_settings_from_log(experiment_log_path, trial_number)
+    return {
+        'audio_reverse': settings['audio_reverse'],
+        'gvs_reverse': settings['gvs_reverse'],
+        'visual_reverse': settings['visual_reverse']
+    }
 
 def find_data_files(folder_path, condition='red'):
     """
@@ -218,12 +237,12 @@ def load_integrated_data(session_path):
         return {}
 
     condition = get_condition_from_experiment_log(experiment_log_file)
-    reverse_settings = get_reverse_settings_from_experiment_log(experiment_log_file)
+    experiment_settings = get_experiment_settings_from_log(experiment_log_file)
     print(f"フォルダ: {os.path.basename(folder_path)}, 条件: {condition}, タイプ: {get_folder_type(folder_path)}, セッション: {session_id}")
-    print(f"反転設定: audio_reverse={reverse_settings['audio_reverse']}, gvs_reverse={reverse_settings['gvs_reverse']}")
+    print(f"実験設定: audio_reverse={experiment_settings['audio_reverse']}, gvs_reverse={experiment_settings['gvs_reverse']}, visual_reverse={experiment_settings['visual_reverse']}, single_color_dot={experiment_settings['single_color_dot']}")
 
     # 必要なファイルを探索（セッション固有）
-    data_files = find_session_data_files(folder_path, session_id, condition, reverse_settings)
+    data_files = find_session_data_files(folder_path, session_id, condition, experiment_settings)
 
     # データを読み込み
     dataframes = {}
@@ -235,9 +254,9 @@ def load_integrated_data(session_path):
         except Exception as e:
             print(f"  - {key}読み込みエラー: {e}")
 
-    return dataframes
+    return dataframes, experiment_settings
 
-def find_session_data_files(folder_path, session_id, condition='red', reverse_settings=None):
+def find_session_data_files(folder_path, session_id, condition='red', experiment_settings=None):
     """
     セッション固有のデータファイルを探索する
 
@@ -245,13 +264,13 @@ def find_session_data_files(folder_path, session_id, condition='red', reverse_se
         folder_path (str): 検索するフォルダのパス
         session_id (str): セッションID（タイムスタンプ）
         condition (str): 条件（'red' or 'green'）
-        reverse_settings (dict): 反転設定（audio_reverse, gvs_reverse）
+        experiment_settings (dict): 実験設定（audio_reverse, gvs_reverse, single_color_dot）
 
     Returns:
         dict: 見つかったファイルのパス辞書
     """
-    if reverse_settings is None:
-        reverse_settings = {'audio_reverse': False, 'gvs_reverse': False}
+    if experiment_settings is None:
+        experiment_settings = {'audio_reverse': False, 'gvs_reverse': False, 'single_color_dot': False}
 
     files = os.listdir(folder_path)
     data_files = {}
@@ -264,16 +283,16 @@ def find_session_data_files(folder_path, session_id, condition='red', reverse_se
         return original_condition
 
     # 各データタイプに対する有効な条件を計算
-    audio_condition = get_effective_condition(condition, reverse_settings.get('audio_reverse', False))
-    gvs_condition = get_effective_condition(condition, reverse_settings.get('gvs_reverse', False))
+    audio_condition = get_effective_condition(condition, experiment_settings.get('audio_reverse', False))
+    gvs_condition = get_effective_condition(condition, experiment_settings.get('gvs_reverse', False))
 
     print(f"  オリジナル条件: {condition}")
-    if reverse_settings.get('audio_reverse', False):
+    if experiment_settings.get('audio_reverse', False):
         print(f"  音響データ条件: {audio_condition} (反転)")
-    if reverse_settings.get('gvs_reverse', False):
+    if experiment_settings.get('gvs_reverse', False):
         print(f"  GVSデータ条件: {gvs_condition} (反転)")
-
-    # セッション固有のファイルを探索
+    if experiment_settings.get('single_color_dot', False):
+        print(f"  単色ドットモード: {condition}色のみ")    # セッション固有のファイルを探索
     for file in files:
         if session_id != 'default':
             # タイムスタンプ付きファイル
@@ -351,7 +370,7 @@ def find_target_csv_files(input_path, file_pattern=None):
 
     return sorted(target_files)
 
-def merge_experiment_data(dataframes, folder_type):
+def merge_experiment_data(dataframes, folder_type, experiment_settings=None, condition='red'):
     """
     実験データをリサンプリングして統合し、一つのデータフレームを作成する
 
@@ -364,10 +383,14 @@ def merge_experiment_data(dataframes, folder_type):
     Args:
         dataframes (dict): 読み込まれたデータフレーム辞書
         folder_type (str): フォルダタイプ
+        experiment_settings (dict): 実験設定（single_color_dot, visual_reverse等）
+        condition (str): 実験条件（'red' or 'green'）
 
     Returns:
         pd.DataFrame: 統合されたデータフレーム
     """
+    if experiment_settings is None:
+        experiment_settings = {'single_color_dot': False, 'visual_reverse': False}
     if 'accel_sensor' not in dataframes or 'random_dot' not in dataframes:
         print("基本データ（accel_sensor, random_dot）が不足しています")
         return None
@@ -528,11 +551,46 @@ def merge_experiment_data(dataframes, folder_type):
         print(f"    ピッチ平均: {merged_df['pitch'].mean():.3f}°")
         print(f"    ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
 
+    # single_color_dotモードの処理
+    if experiment_settings.get('single_color_dot', False):
+        visual_reverse = experiment_settings.get('visual_reverse', False)
+        
+        # visual_reverseが有効な場合、条件を反転
+        if visual_reverse:
+            target_condition = 'green' if condition == 'red' else 'red'
+            print(f"    single_color_dotモード: 条件={condition} → visual_reverse適用 → 表示条件={target_condition}")
+        else:
+            target_condition = condition
+            print(f"    single_color_dotモード: 条件={condition} → 表示条件={target_condition}")
+        
+        # 対象でない色のドットデータを削除
+        if target_condition == 'red':
+            # 赤ドットのみ表示 - 緑ドットデータを削除
+            columns_to_remove = [col for col in merged_df.columns if col.startswith('green_dot')]
+            for col in columns_to_remove:
+                merged_df.drop(columns=[col], inplace=True)
+                print(f"    {col}列を削除（single_color_dot: red）")
+        else:
+            # 緑ドットのみ表示 - 赤ドットデータを削除
+            columns_to_remove = [col for col in merged_df.columns if col.startswith('red_dot')]
+            for col in columns_to_remove:
+                merged_df.drop(columns=[col], inplace=True)
+                print(f"    {col}列を削除（single_color_dot: green）")
+    
     # ドットデータの変化量を計算（リサンプリング後）
-    if 'red_dot_mean_x' in merged_df.columns and 'green_dot_mean_x' in merged_df.columns:
+    # single_color_dotモードの場合は片方のドットデータのみ存在する可能性がある
+    if 'red_dot_mean_x' in merged_df.columns:
         merged_df['red_dot_x_change'] = merged_df['red_dot_mean_x'] - merged_df['red_dot_mean_x'].iloc[0]
+        print(f"    赤ドットX座標変化量を計算")
+
+    if 'green_dot_mean_x' in merged_df.columns:
         merged_df['green_dot_x_change'] = merged_df['green_dot_mean_x'] - merged_df['green_dot_mean_x'].iloc[0]
-        print(f"    ドットX座標変化量を計算")
+        print(f"    緑ドットX座標変化量を計算")
+
+    # single_color_dotモードでない場合、両方のドットデータが必要
+    if not experiment_settings.get('single_color_dot', False):
+        if not ('red_dot_mean_x' in merged_df.columns and 'green_dot_mean_x' in merged_df.columns):
+            print(f"    警告: 通常モードですが、ドットデータが不完全です")
 
     # 追加データのリサンプリング統合
     if (folder_type == 'gvs' or folder_type == 'all') and 'dac_output' in dataframes:
@@ -609,7 +667,7 @@ def merge_experiment_data(dataframes, folder_type):
 
     return merged_df
 
-def plot_integrated_data(df, session_id, folder_path, folder_type):
+def plot_integrated_data(df, session_id, folder_path, folder_type, experiment_settings=None, condition='red'):
     """
     統合データのグラフを作成する
 
@@ -618,7 +676,11 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
         session_id (str): セッションID
         folder_path (str): フォルダパス
         folder_type (str): フォルダタイプ
+        experiment_settings (dict): 実験設定（single_color_dot, visual_reverse等）
+        condition (str): 実験条件（'red' or 'green'）
     """
+    if experiment_settings is None:
+        experiment_settings = {'single_color_dot': False, 'visual_reverse': False, 'audio_reverse': False, 'gvs_reverse': False}
     if df is None or df.empty:
         print("グラフ作成用のデータがありません")
         return
@@ -641,7 +703,22 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
     if subplot_count == 2:
         axes = list(axes)
 
-    fig.suptitle(f'統合データ解析 - {folder_type.upper()} Session: {session_id}', fontsize=16)
+    # リバース設定の表示文字列を作成
+    reverse_indicators = []
+    if experiment_settings.get('visual_reverse', False):
+        reverse_indicators.append('視覚反転')
+    if experiment_settings.get('audio_reverse', False):
+        reverse_indicators.append('音響反転')
+    if experiment_settings.get('gvs_reverse', False):
+        reverse_indicators.append('GVS反転')
+    if experiment_settings.get('single_color_dot', False):
+        target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+        reverse_indicators.append(f'単色ドット({target_condition})')
+    
+    # 元の条件と設定情報を含むタイトル
+    condition_info = f"条件: {condition}"
+    reverse_suffix = f" [{', '.join(reverse_indicators)}]" if reverse_indicators else ""
+    fig.suptitle(f'統合データ解析 - {folder_type.upper()} ({condition_info}) Session: {session_id}{reverse_suffix}', fontsize=16)
 
     # サブプロット1: 加速度データ
     axes[0].plot(df['psychopy_time'], df['accel_x'], label='X軸加速度', alpha=0.7)
@@ -654,11 +731,17 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
 
 
     # サブプロット2: 視覚刺激（ドット位置）と角度変化の重ね合わせ
-    if 'red_dot_mean_x' in df.columns and 'green_dot_mean_x' in df.columns and 'angle_change' in df.columns:
+    # single_color_dotモードでは片方のドットデータのみ存在する可能性がある
+    if ('red_dot_mean_x' in df.columns or 'green_dot_mean_x' in df.columns) and 'angle_change' in df.columns:
         ax2_1 = axes[1]
         # ドット位置（左軸）
-        line1 = ax2_1.plot(df['psychopy_time'], df['red_dot_mean_x'], color='red', alpha=0.7, label='赤ドットX座標')
-        line2 = ax2_1.plot(df['psychopy_time'], df['green_dot_mean_x'], color='green', alpha=0.7, label='緑ドットX座標')
+        dot_lines = []
+        if 'red_dot_mean_x' in df.columns:
+            line1 = ax2_1.plot(df['psychopy_time'], df['red_dot_mean_x'], color='red', alpha=0.7, label='赤ドットX座標')
+            dot_lines.extend(line1)
+        if 'green_dot_mean_x' in df.columns:
+            line2 = ax2_1.plot(df['psychopy_time'], df['green_dot_mean_x'], color='green', alpha=0.7, label='緑ドットX座標')
+            dot_lines.extend(line2)
         ax2_1.set_ylabel('X座標 (pixel)', color='black')
         ax2_1.tick_params(axis='y', labelcolor='black')
 
@@ -670,10 +753,19 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
         ax2_2.tick_params(axis='y', labelcolor='orange')
 
         # 凡例を結合
-        lines = line1 + line2 + line3
-        labels = [l.get_label() for l in lines]
-        ax2_1.legend(lines, labels, loc='upper left')
-        ax2_1.set_title('視覚刺激（ドット位置）と角度変化')
+        all_lines = dot_lines + line3
+        labels = [l.get_label() for l in all_lines]
+        ax2_1.legend(all_lines, labels, loc='upper left')
+        
+        # 視覚刺激のタイトルにリバース情報を追加
+        visual_title_suffix = ""
+        if experiment_settings.get('single_color_dot', False):
+            target_condition = 'green' if (condition == 'red' and experiment_settings.get('visual_reverse', False)) or (condition == 'green' and not experiment_settings.get('visual_reverse', False)) else 'red'
+            visual_title_suffix += f" (単色: {target_condition}ドット)"
+        if experiment_settings.get('visual_reverse', False):
+            visual_title_suffix += " [視覚反転]"
+        
+        ax2_1.set_title(f'視覚刺激（ドット位置）と角度変化{visual_title_suffix}')
         ax2_1.grid(True, alpha=0.3)
 
         # 視覚刺激のみの場合はここでX軸ラベルを追加
@@ -719,7 +811,13 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
                 ax3_2.set_ylim(-axis_limit, axis_limit)
                 ax3_3.set_ylim(-axis_limit, axis_limit)
 
-                ax3_1.set_title('統合刺激（GVS + 音響）と姿勢角度変化')
+                gvs_audio_indicators = []
+                if experiment_settings.get('gvs_reverse', False):
+                    gvs_audio_indicators.append('GVS反転')
+                if experiment_settings.get('audio_reverse', False):
+                    gvs_audio_indicators.append('音響反転')
+                gvs_audio_suffix = f" [{', '.join(gvs_audio_indicators)}]" if gvs_audio_indicators else ""
+                ax3_1.set_title(f'統合刺激（GVS + 音響）と姿勢角度変化{gvs_audio_suffix}')
 
             elif 'gvs_dac_output' in df.columns:
                 # GVS出力のみ（左軸）
@@ -736,7 +834,8 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
                 ax3_2.tick_params(axis='y', labelcolor='orange')
                 all_lines.extend(line2)
 
-                ax3_1.set_title('GVS刺激と姿勢角度変化')
+                gvs_suffix = " [GVS反転]" if experiment_settings.get('gvs_reverse', False) else ""
+                ax3_1.set_title(f'GVS刺激と姿勢角度変化{gvs_suffix}')
 
             elif 'audio_angle_change' in df.columns:
                 # 音響角度変化のみ（左軸）
@@ -761,7 +860,8 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
                 ax3_1.set_ylim(-axis_limit, axis_limit)
                 ax3_2.set_ylim(-axis_limit, axis_limit)
 
-                ax3_1.set_title('音響刺激と姿勢角度変化')
+                audio_suffix = " [音響反転]" if experiment_settings.get('audio_reverse', False) else ""
+                ax3_1.set_title(f'音響刺激と姿勢角度変化{audio_suffix}')
 
             # 凡例を結合
             labels = [l.get_label() for l in all_lines]
@@ -785,7 +885,8 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
             all_lines = line1 + line2
             labels = [l.get_label() for l in all_lines]
             ax3_1.legend(all_lines, labels, loc='upper left')
-            ax3_1.set_title('GVS刺激と角度変化の重ね合わせ')
+            gvs_suffix = " [GVS反転]" if experiment_settings.get('gvs_reverse', False) else ""
+            ax3_1.set_title(f'GVS刺激と角度変化の重ね合わせ{gvs_suffix}')
 
         elif folder_type == 'audio' and 'audio_angle_change' in df.columns and 'angle_change' in df.columns:
             ax3_1 = axes[2]
@@ -814,7 +915,8 @@ def plot_integrated_data(df, session_id, folder_path, folder_type):
             all_lines = line1 + line2
             labels = [l.get_label() for l in all_lines]
             ax3_1.legend(all_lines, labels, loc='upper left')
-            ax3_1.set_title('音響刺激（角度変化）と姿勢角度変化の比較')
+            audio_suffix = " [音響反転]" if experiment_settings.get('audio_reverse', False) else ""
+            ax3_1.set_title(f'音響刺激（角度変化）と姿勢角度変化の比較{audio_suffix}')
 
         # 3番目のサブプロットがある場合のX軸ラベル設定
         axes[2].set_xlabel('時間 (秒)')
@@ -993,11 +1095,32 @@ def process_experiment_folder(session_path):
         session_id = 'default'
 
     # 統合データを読み込み
-    dataframes = load_integrated_data(session_path)
+    result = load_integrated_data(session_path)
+    if len(result) == 2:
+        dataframes, experiment_settings = result
+    else:
+        # 後方互換性のため
+        dataframes = result
+        experiment_settings = {'single_color_dot': False, 'visual_reverse': False}
 
     if not dataframes:
         print("データが見つかりませんでした。スキップします。")
         return
+
+    # 条件を取得
+    experiment_log_file = None
+    target_files = os.listdir(folder_path)
+    for file in target_files:
+        if session_id != 'default' and file.startswith(f"{session_id}_experiment_log.csv"):
+            experiment_log_file = os.path.join(folder_path, file)
+            break
+        elif session_id == 'default' and file == 'experiment_log.csv':
+            experiment_log_file = os.path.join(folder_path, file)
+            break
+    
+    condition = 'red'  # デフォルト
+    if experiment_log_file:
+        condition = get_condition_from_experiment_log(experiment_log_file)
 
     # データの統合処理
     folder_type = get_folder_type(folder_path)
@@ -1005,7 +1128,7 @@ def process_experiment_folder(session_path):
     has_audio = 'audio' in dataframes and (folder_type == 'audio' or folder_type == 'all')
 
     # 統合データフレームの作成
-    integrated_df = merge_experiment_data(dataframes, folder_type)
+    integrated_df = merge_experiment_data(dataframes, folder_type, experiment_settings, condition)
 
     if integrated_df is not None:
         # 出力ファイル名の生成
@@ -1016,7 +1139,7 @@ def process_experiment_folder(session_path):
 
         # グラフを作成
         print("グラフを作成中...")
-        plot_integrated_data(integrated_df, session_id, folder_path, folder_type)
+        plot_integrated_data(integrated_df, session_id, folder_path, folder_type, experiment_settings, condition)
     else:
         print("統合データの作成に失敗しました")
 

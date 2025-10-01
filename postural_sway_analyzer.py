@@ -432,24 +432,39 @@ def save_sway_data(df, output_path, cutoff_freq=3.0):
         return None
 
 
-def save_correlation_summary(df, output_path, cutoff_freq=3.0):
+def calculate_file_correlations(df, session_id, experiment_settings, condition, cutoff_freq=3.0, enable_audio_0_3hz_filter=False):
     """
-    相関係数サマリーをCSVファイルに保存
+    単一ファイルの相関係数を計算してディクショナリで返す
 
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
-        output_path (str): 出力ファイルパス
+        session_id (str): セッションID
+        experiment_settings (dict): 実験設定
+        condition (str): 実験条件
         cutoff_freq (float): 使用したカットオフ周波数
+        enable_audio_0_3hz_filter (bool): 0.3Hz音響フィルタを有効にするかどうか
+
+    Returns:
+        dict: 相関係数と実験情報を含むディクショナリ
     """
     try:
-        # ファイル名の準備
-        base_name = os.path.splitext(output_path)[0]
-        if base_name.endswith('_scope'):
-            corr_output_path = f"{base_name}_correlation_summary_{cutoff_freq}Hz.csv"
-        else:
-            corr_output_path = f"{base_name}_correlation_summary_{cutoff_freq}Hz.csv"
-
-        correlations = []
+        result = {
+            'session_id': session_id,
+            'condition': condition,
+            'single_color_dot': experiment_settings.get('single_color_dot', False),
+            'visual_reverse': experiment_settings.get('visual_reverse', False),
+            'audio_reverse': experiment_settings.get('audio_reverse', False),
+            'gvs_reverse': experiment_settings.get('gvs_reverse', False),
+            'data_points': len(df),
+            'audio_corr_3hz': np.nan,
+            'gvs_corr_3hz': np.nan,
+            'red_dot_corr_3hz': np.nan,
+            'green_dot_corr_3hz': np.nan
+        }
+        
+        # 0.3Hz音響フィルタが有効な場合のみ追加
+        if enable_audio_0_3hz_filter:
+            result['audio_corr_0_3hz'] = np.nan
 
         # ロール変化（angle_change_sway）との相関を計算
         if 'angle_change_sway' in df.columns:
@@ -457,78 +472,75 @@ def save_correlation_summary(df, output_path, cutoff_freq=3.0):
 
             # 音響角度変化との相関
             if 'audio_angle_change_sway' in df.columns:
-                audio_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_sway'].values)
-                correlations.append({
-                    'stimulus_type': 'audio_angle_change',
-                    'filter_type': f'{cutoff_freq}Hz_LPF',
-                    'correlation_coefficient': audio_corr,
-                    'data_points': len(df),
-                    'description': f'ロール変化 vs 音響角度変化 ({cutoff_freq}Hz LPF)'
-                })
+                result['audio_corr_3hz'] = calculate_overall_correlation(angle_sway, df['audio_angle_change_sway'].values)
 
-            # 0.3Hz音響データとの相関（利用可能な場合）
-            if 'audio_angle_change_0_3hz' in df.columns:
-                audio_0_3hz_corr = calculate_overall_correlation(angle_sway, df['audio_angle_change_0_3hz'].values)
-                correlations.append({
-                    'stimulus_type': 'audio_angle_change',
-                    'filter_type': '0.3Hz_LPF',
-                    'correlation_coefficient': audio_0_3hz_corr,
-                    'data_points': len(df),
-                    'description': 'ロール変化 vs 音響角度変化 (0.3Hz LPF)'
-                })
+            # 0.3Hz音響データとの相関（enable_audio_0_3hz_filterがTrueかつ利用可能な場合のみ）
+            if enable_audio_0_3hz_filter and 'audio_angle_change_0_3hz' in df.columns:
+                result['audio_corr_0_3hz'] = calculate_overall_correlation(angle_sway, df['audio_angle_change_0_3hz'].values)
 
             # GVS DACとの相関
             if 'gvs_dac_output_sway' in df.columns:
-                gvs_corr = calculate_overall_correlation(angle_sway, df['gvs_dac_output_sway'].values)
-                correlations.append({
-                    'stimulus_type': 'gvs_dac_output',
-                    'filter_type': f'{cutoff_freq}Hz_LPF',
-                    'correlation_coefficient': gvs_corr,
-                    'data_points': len(df),
-                    'description': f'ロール変化 vs GVS DAC出力 ({cutoff_freq}Hz LPF)'
-                })
+                result['gvs_corr_3hz'] = calculate_overall_correlation(angle_sway, df['gvs_dac_output_sway'].values)
 
             # 視覚刺激との相関
             if 'red_dot_mean_x_sway' in df.columns:
-                red_corr = calculate_overall_correlation(angle_sway, df['red_dot_mean_x_sway'].values)
-                correlations.append({
-                    'stimulus_type': 'red_dot_x',
-                    'filter_type': f'{cutoff_freq}Hz_LPF',
-                    'correlation_coefficient': red_corr,
-                    'data_points': len(df),
-                    'description': f'ロール変化 vs 赤ドットX座標 ({cutoff_freq}Hz LPF)'
-                })
+                result['red_dot_corr_3hz'] = calculate_overall_correlation(angle_sway, df['red_dot_mean_x_sway'].values)
 
             if 'green_dot_mean_x_sway' in df.columns:
-                green_corr = calculate_overall_correlation(angle_sway, df['green_dot_mean_x_sway'].values)
-                correlations.append({
-                    'stimulus_type': 'green_dot_x',
-                    'filter_type': f'{cutoff_freq}Hz_LPF',
-                    'correlation_coefficient': green_corr,
-                    'data_points': len(df),
-                    'description': f'ロール変化 vs 緑ドットX座標 ({cutoff_freq}Hz LPF)'
-                })
+                result['green_dot_corr_3hz'] = calculate_overall_correlation(angle_sway, df['green_dot_mean_x_sway'].values)
 
-        # データフレーム作成・保存
-        if correlations:
-            corr_df = pd.DataFrame(correlations)
-            corr_df.to_csv(corr_output_path, index=False)
-
-            print(f"相関係数サマリーを保存: {os.path.basename(corr_output_path)}")
-            print("相関係数:")
-            for corr in correlations:
-                if not np.isnan(corr['correlation_coefficient']):
-                    print(f"  - {corr['description']}: {corr['correlation_coefficient']:.3f}")
-                else:
-                    print(f"  - {corr['description']}: N/A (計算不可)")
-
-            return corr_output_path
-        else:
-            print("相関係数計算に必要なデータが見つかりませんでした")
-            return None
+        return result
 
     except Exception as e:
-        print(f"エラー: 相関係数サマリー保存に失敗: {e}")
+        print(f"エラー: 相関係数計算に失敗: {e}")
+        return None
+
+
+def save_integrated_correlation_summary(correlation_data_list, folder_path, cutoff_freq=3.0):
+    """
+    フォルダ内の全ファイルの相関係数サマリーを統合して保存
+
+    Args:
+        correlation_data_list (list): 各ファイルの相関係数データのリスト
+        folder_path (str): 出力フォルダパス
+        cutoff_freq (float): 使用したカットオフ周波数
+    """
+    try:
+        if not correlation_data_list:
+            print("相関係数データがありません")
+            return None
+
+        # 出力ファイルパス
+        output_file = os.path.join(folder_path, f"correlation_summary_{cutoff_freq}Hz.csv")
+
+        # データフレーム作成
+        df = pd.DataFrame(correlation_data_list)
+        
+        # カラム順序を整理（audio_corr_0_3hzが存在する場合のみ含める）
+        column_order = ['session_id', 'condition', 'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse', 'data_points',
+                       'audio_corr_3hz']
+        
+        # audio_corr_0_3hzが存在する場合のみ追加
+        if 'audio_corr_0_3hz' in df.columns:
+            column_order.append('audio_corr_0_3hz')
+        
+        column_order.extend(['gvs_corr_3hz', 'red_dot_corr_3hz', 'green_dot_corr_3hz'])
+        
+        # 存在するカラムのみ選択
+        available_columns = [col for col in column_order if col in df.columns]
+        df = df[available_columns]
+        
+        # CSV保存
+        df.to_csv(output_file, index=False)
+        
+        print(f"統合相関係数サマリーを保存: {os.path.basename(output_file)}")
+        print(f"  - 対象ファイル数: {len(correlation_data_list)}")
+        print(f"  - 保存パス: {output_file}")
+        
+        return output_file
+        
+    except Exception as e:
+        print(f"エラー: 統合相関係数サマリー保存に失敗: {e}")
         return None
 
 
@@ -1104,19 +1116,18 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0,
         # 身体動揺データを保存
         sway_file_path = save_sway_data(filtered_df, filepath, cutoff_freq)
 
-        # 相関係数サマリーを保存
-        print("相関係数サマリーを計算・保存中...")
-        corr_file_path = save_correlation_summary(filtered_df, filepath, cutoff_freq)
+        # 相関係数を計算（統合サマリー用）
+        correlation_data = calculate_file_correlations(filtered_df, session_id, experiment_settings, condition, cutoff_freq, enable_audio_0_3hz_filter)
 
         # グラフを作成・保存
         if sway_file_path:
             print("身体動揺解析グラフ（相関係数含む）を作成中...")
             plot_sway_data(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data, experiment_settings, condition)
 
-        return True
+        return correlation_data
     else:
         print("データ処理に失敗しました")
-        return False
+        return None
 
 
 def main():
@@ -1170,22 +1181,56 @@ def main():
 
     print(f"見つかったファイル数: {len(analysis_files)}")
 
-    # 各ファイルを処理
-    success_count = 0
+    # フォルダ別にファイルをグループ化
+    folder_groups = {}
     for filepath in analysis_files:
-        try:
-            if process_integrated_analysis_file(filepath, cutoff_freq,
-                                               enable_audio_0_3hz_filter,
-                                               enable_gvs_sine_internal):
-                success_count += 1
-        except Exception as e:
-            print(f"エラー: {filepath} の処理に失敗: {e}")
+        folder_path = os.path.dirname(filepath)
+        if folder_path not in folder_groups:
+            folder_groups[folder_path] = []
+        folder_groups[folder_path].append(filepath)
+
+    # フォルダごとに処理
+    total_success_count = 0
+    total_file_count = 0
+    
+    for folder_path, files in folder_groups.items():
+        print(f"\n{'='*80}")
+        print(f"フォルダ処理: {folder_path}")
+        print(f"ファイル数: {len(files)}")
+        print(f"{'='*80}")
+        
+        correlation_data_list = []
+        success_count = 0
+        
+        # フォルダ内の各ファイルを処理
+        for filepath in files:
+            try:
+                correlation_data = process_integrated_analysis_file(filepath, cutoff_freq,
+                                                                   enable_audio_0_3hz_filter,
+                                                                   enable_gvs_sine_internal)
+                if correlation_data:
+                    correlation_data_list.append(correlation_data)
+                    success_count += 1
+                    total_success_count += 1
+                total_file_count += 1
+            except Exception as e:
+                print(f"エラー: {filepath} の処理に失敗: {e}")
+                total_file_count += 1
+        
+        # フォルダの統合相関係数サマリーを保存
+        if correlation_data_list:
+            print(f"\n統合相関係数サマリーを作成中... (フォルダ: {os.path.basename(folder_path)})")
+            save_integrated_correlation_summary(correlation_data_list, folder_path, cutoff_freq)
+        
+        print(f"\nフォルダ処理完了: {os.path.basename(folder_path)}")
+        print(f"  - 処理成功: {success_count}/{len(files)}")
 
     print(f"\n{'='*80}")
-    print(f"処理完了")
-    print(f"総ファイル数: {len(analysis_files)}")
-    print(f"成功: {success_count}")
-    print(f"失敗: {len(analysis_files) - success_count}")
+    print(f"全体処理完了")
+    print(f"総ファイル数: {total_file_count}")
+    print(f"成功: {total_success_count}")
+    print(f"失敗: {total_file_count - total_success_count}")
+    print(f"処理フォルダ数: {len(folder_groups)}")
     print(f"ローパスフィルタ周波数: {cutoff_freq}Hz")
     print(f"{'='*80}")
 

@@ -526,30 +526,124 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
         if col not in merged_df.columns:  # psychopy_timeは重複回避
             merged_df[col] = values
 
-    # オイラー角の計算（リサンプリング後のデータで）
+    # 重力正規化オイラー角の計算（リサンプリング後のデータで）
     if 'accel_x' in merged_df.columns and 'accel_y' in merged_df.columns and 'accel_z' in merged_df.columns:
-        print(f"\n  オイラー角計算 (リサンプリング後):")
+        print(f"\n  重力正規化オイラー角計算 (リサンプリング後):")
 
-        # ロール（Z軸回りの左右傾斜）: arctan2(accel_y, accel_z)
-        merged_df['roll'] = np.arctan2(merged_df['accel_y'], merged_df['accel_z']) * 180 / np.pi
+        # 加速度データを numpy配列として取得
+        accel_data = merged_df[['accel_x', 'accel_y', 'accel_z']].values
 
-        # ピッチ（Y軸回りの前後傾斜）: arctan2(-accel_x, sqrt(accel_y^2 + accel_z^2))
-        merged_df['pitch'] = np.arctan2(-merged_df['accel_x'], 
-                                       np.sqrt(merged_df['accel_y']**2 + merged_df['accel_z']**2)) * 180 / np.pi
+        # 1. 平均ベクトル（重力方向）を計算
+        gravity_vector = np.mean(accel_data, axis=0)
+        gravity_magnitude = np.linalg.norm(gravity_vector)
 
-        # 初期位置からの変化量を計算
-        initial_roll = merged_df['roll'].iloc[0]
-        initial_pitch = merged_df['pitch'].iloc[0]
+        if gravity_magnitude > 1e-6:  # ゼロ除算を回避
+            # 正規化された重力方向（新しいZ軸の負の方向）
+            gravity_unit = gravity_vector / gravity_magnitude
 
-        merged_df['roll_change'] = merged_df['roll'] - initial_roll
-        merged_df['pitch_change'] = merged_df['pitch'] - initial_pitch
+            print(f"    重力方向ベクトル: [{gravity_vector[0]:.3f}, {gravity_vector[1]:.3f}, {gravity_vector[2]:.3f}]")
+            print(f"    重力大きさ: {gravity_magnitude:.3f} m/s²")
 
-        # メインの角度変化としてロールを使用
-        merged_df['angle_change'] = merged_df['roll_change']
+            # 2. 新しい座標系を構築
+            # 新しいZ軸: gravity_unit (重力の方向)
+            new_z = gravity_unit
 
-        print(f"    ロール平均: {merged_df['roll'].mean():.3f}°")
-        print(f"    ピッチ平均: {merged_df['pitch'].mean():.3f}°")
-        print(f"    ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
+            # 元のZ軸方向 [0, 0, 1] に最も近い方向を新しいX軸の負の方向とする
+            original_z = np.array([0, 0, 1])
+
+            # 新しいX軸の候補: 元のZ軸方向から重力成分を除去
+            temp_x = original_z - np.dot(original_z, new_z) * new_z
+            temp_x_magnitude = np.linalg.norm(temp_x)
+
+            if temp_x_magnitude > 1e-6:
+                # 新しいX軸の負の方向
+                new_x = -temp_x / temp_x_magnitude
+            else:
+                # 重力が元のZ軸と平行な場合、X軸方向を代替として使用
+                temp_x = np.array([1, 0, 0]) - np.dot([1, 0, 0], new_z) * new_z
+                new_x = -temp_x / np.linalg.norm(temp_x)
+
+            # 新しいY軸: 右手系でZ×Xの外積
+            new_y = np.cross(new_z, new_x)
+
+            print(f"    新座標系 X軸: [{new_x[0]:.3f}, {new_x[1]:.3f}, {new_x[2]:.3f}]")
+            print(f"    新座標系 Y軸: [{new_y[0]:.3f}, {new_y[1]:.3f}, {new_y[2]:.3f}]")
+            print(f"    新座標系 Z軸: [{new_z[0]:.3f}, {new_z[1]:.3f}, {new_z[2]:.3f}]")
+
+            # 3. 各時点での加速度ベクトルを新しい座標系に変換
+            normalized_accel = np.zeros_like(accel_data)
+            for i, accel in enumerate(accel_data):
+                # 新しい座標系での成分
+                normalized_accel[i, 0] = np.dot(accel, new_x)  # X成分
+                normalized_accel[i, 1] = np.dot(accel, new_y)  # Y成分
+                normalized_accel[i, 2] = np.dot(accel, new_z)  # Z成分
+
+            # データフレームに正規化された加速度を追加
+            merged_df['accel_x_norm'] = normalized_accel[:, 0]
+            merged_df['accel_y_norm'] = normalized_accel[:, 1]
+            merged_df['accel_z_norm'] = normalized_accel[:, 2]
+
+            # 4. 正規化された座標系でオイラー角を計算
+            # ロール（新しいX軸周りの回転）: arctan2(accel_y_norm, accel_z_norm)
+            merged_df['roll'] = np.arctan2(merged_df['accel_y_norm'], merged_df['accel_z_norm']) * 180 / np.pi
+
+            # ピッチ（新しいY軸周りの回転）: arctan2(-accel_x_norm, sqrt(accel_y_norm^2 + accel_z_norm^2))
+            merged_df['pitch'] = np.arctan2(-merged_df['accel_x_norm'], 
+                                           np.sqrt(merged_df['accel_y_norm']**2 + merged_df['accel_z_norm']**2)) * 180 / np.pi
+
+            # 角度を-180から+180度の範囲に正規化 重力の反対方向が角度0
+            def normalize_angle(angle):
+                """角度を-180から+180度の範囲に正規化"""
+                return ((angle + 180) % 360) - 180
+
+            merged_df['roll'] = normalize_angle(merged_df['roll'])
+            merged_df['pitch'] = normalize_angle(merged_df['pitch'])
+
+            # 初期位置からの変化量を計算
+            initial_roll = merged_df['roll'].iloc[0]
+            initial_pitch = merged_df['pitch'].iloc[0]
+
+            # 角度変化も-180から+180度の範囲に正規化
+            roll_diff = merged_df['roll'] - initial_roll
+            pitch_diff = merged_df['pitch'] - initial_pitch
+
+            merged_df['roll_change'] = normalize_angle(roll_diff)
+            merged_df['pitch_change'] = normalize_angle(pitch_diff)
+
+            # メインの角度変化として正規化されたロールを使用
+            merged_df['angle_change'] = merged_df['roll']
+
+            print(f"    正規化ロール平均: {merged_df['roll'].mean():.3f}°")
+            print(f"    正規化ピッチ平均: {merged_df['pitch'].mean():.3f}°")
+            print(f"    正規化ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
+
+        else:
+            print("    警告: 重力ベクトルの大きさが0に近いため、従来の計算を使用")
+
+            # 角度正規化関数を定義
+            def normalize_angle(angle):
+                """角度を-180から+180度の範囲に正規化"""
+                return ((angle + 180) % 360) - 180
+
+            # フォールバック: 従来の計算
+            merged_df['roll'] = np.arctan2(merged_df['accel_y'], merged_df['accel_z']) * 180 / np.pi
+            merged_df['pitch'] = np.arctan2(-merged_df['accel_x'], 
+                                           np.sqrt(merged_df['accel_y']**2 + merged_df['accel_z']**2)) * 180 / np.pi
+
+            # 角度を-180から+180度の範囲に正規化
+            merged_df['roll'] = normalize_angle(merged_df['roll'])
+            merged_df['pitch'] = normalize_angle(merged_df['pitch'])
+
+            initial_roll = merged_df['roll'].iloc[0]
+            initial_pitch = merged_df['pitch'].iloc[0]
+
+            # 角度変化も-180から+180度の範囲に正規化
+            roll_diff = merged_df['roll'] - initial_roll
+            pitch_diff = merged_df['pitch'] - initial_pitch
+
+            merged_df['roll_change'] = normalize_angle(roll_diff)
+            merged_df['pitch_change'] = normalize_angle(pitch_diff)
+            merged_df['angle_change'] = merged_df['roll_change']
 
     # single_color_dotモードの処理
     # audiovisual_experimentに合わせたロジック:
@@ -557,7 +651,7 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
     # - SINGLE_COLOR_DOT=True かつ VISUAL_REVERSE=Trueの場合、元の条件色のドットを表示
     if experiment_settings.get('single_color_dot', False):
         visual_reverse = experiment_settings.get('visual_reverse', False)
-        
+
         if visual_reverse:
             # VISUAL_REVERSE=Trueの場合、元の条件色を表示
             target_condition = condition
@@ -566,7 +660,7 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
             # デフォルトでは反対色を表示
             target_condition = 'green' if condition == 'red' else 'red'
             print(f"    single_color_dotモード: 条件={condition} → 表示条件={target_condition} (反対色)")
-        
+
         # 対象でない色のドットデータを削除
         if target_condition == 'red':
             # 赤ドットのみ表示 - 緑ドットデータを削除

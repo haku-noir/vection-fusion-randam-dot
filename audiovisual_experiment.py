@@ -19,10 +19,10 @@ FORCE_COND = None
 # ★★★ 実験条件制御設定 ★★★
 # 各条件をcond_typeに対して反対にするかどうかの設定
 # 注意: これらの設定は個別にON/OFFできます（互いに独立）
-SINGLE_COLOR_DOT = False     # ランダムドット1色のみ表示（cond_typeの色のみ）
-                            # True: cond_type='red'なら赤ドットのみ、'green'なら緑ドットのみ
-VISUAL_REVERSE = False       # 視覚刺激の反対（SINGLE_COLOR_DOTでcond_typeと反対の色のみ表示）
-                            # True: cond_type='red'なら緑ドットのみ、'green'なら赤ドットのみ
+SINGLE_COLOR_DOT = False     # ランダムドット1色のみ表示（デフォルトはcond_typeの反対色のみ）
+                            # True: cond_type='red'なら緑ドットのみ、'green'なら赤ドットのみ（デフォルト）
+VISUAL_REVERSE = False       # 視覚刺激の逆転（SINGLE_COLOR_DOTでcond_typeの色のみ表示）
+                            # True: cond_type='red'なら赤ドットのみ、'green'なら緑ドットのみ（SINGLE_COLOR_DOT有効時）
 AUDIO_REVERSE = False        # 音響刺激の反対（cond_typeと反対側にパンニング）
                             # True: cond_type='red'なら緑ドット側に音がパンニング、'green'なら赤ドット側に音がパンニング
 GVS_REVERSE = False          # GVS刺激の反対（cond_typeと反対の極性）
@@ -1365,17 +1365,17 @@ try:
         # 初期位置でドットを描画（制御変数に基づく）
         if SINGLE_COLOR_DOT:
             if VISUAL_REVERSE:
-                # cond_typeと反対の色を同期させて表示
-                if cond_type == 'green':
-                    red_dots.draw()
-                else:
-                    green_dots.draw()
-            else:
-                # cond_typeの色のみ表示
+                # VISUAL_REVERSE=True: cond_typeの色のみ表示
                 if cond_type == 'red':
                     red_dots.draw()
                 else:
                     green_dots.draw()
+            else:
+                # VISUAL_REVERSE=False: cond_typeの反対色のみ表示（デフォルト）
+                if cond_type == 'red':
+                    green_dots.draw()
+                else:
+                    red_dots.draw()
         else:
             # 通常の描画
             if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
@@ -1481,17 +1481,17 @@ try:
             # ドット描画の制御
             if SINGLE_COLOR_DOT:
                 if VISUAL_REVERSE:
-                    # cond_typeと反対の色を同期させて表示
-                    if cond_type == 'green':
-                        red_dots.draw()
-                    else:
-                        green_dots.draw()
-                else:
-                    # cond_typeの色のみ表示
+                    # VISUAL_REVERSE=True: cond_typeの色のみ表示
                     if cond_type == 'red':
                         red_dots.draw()
                     else:
                         green_dots.draw()
+                else:
+                    # VISUAL_REVERSE=False: cond_typeの反対色のみ表示（デフォルト）
+                    if cond_type == 'red':
+                        green_dots.draw()
+                    else:
+                        red_dots.draw()
             else:
                 # 通常の描画（フレーム毎に交互に描画順を変更）
                 if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):

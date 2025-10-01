@@ -6,7 +6,7 @@ postural_sway_analyzerで生成されたcorrelation_summary.csvを読み込み�
 各セッションについて以下の3つのグラフを作成する：
 
 1. 角度変化の箱ひげ図（平均・分散表示付き）
-2. 窓相関の箱ひげ図（平均・分散表示付き）  
+2. 窓相関の箱ひげ図（平均・分散表示付き）
 3. 全体相関の棒グラフ
 
 機能:
@@ -27,6 +27,8 @@ import matplotlib.patches as mpatches
 import seaborn as sns
 import os
 import sys
+import glob
+import shutil
 from pathlib import Path
 
 
@@ -173,7 +175,7 @@ def create_session_visualization(session_data, output_dir):
         if angle_data is not None:
             plot_custom_boxplot(axes[0], angle_data, '角度変化', color='lightblue')
         else:
-            axes[0].text(0.5, 0.5, '角度変化統計データなし\n（新しいCSVが必要）', 
+            axes[0].text(0.5, 0.5, '角度変化統計データなし\n（新しいCSVが必要）',
                         ha='center', va='center', transform=axes[0].transAxes,
                         bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7))
         axes[0].set_title('角度変化の分布')
@@ -218,7 +220,7 @@ def create_session_visualization(session_data, output_dir):
                 axes[1].hlines(data_dict['max'], x_pos-0.05, x_pos+0.05, colors='black')
 
                 # 平均値
-                axes[1].plot(x_pos, data_dict['mean'], marker='o', color='red', markersize=6)
+                axes[1].plot(x_pos, data_dict['mean'], marker='o', color='lightblue', markersize=6)
 
             axes[1].set_xlim(0.5, len(ax2_data) + 0.5)
             axes[1].set_xticks(range(1, len(ax2_data) + 1))
@@ -456,7 +458,7 @@ def create_overview_plot(df, output_dir):
                     current_axes[1].hlines(data_dict['max'], x_pos-0.05, x_pos+0.05, colors='black')
 
                     # 平均値
-                    current_axes[1].plot(x_pos, data_dict['mean'], marker='o', color='red', markersize=4)
+                    current_axes[1].plot(x_pos, data_dict['mean'], marker='o', color='lightblue', markersize=4)
 
                 current_axes[1].set_xlim(0.5, len(window_corr_data) + 0.5)
                 current_axes[1].set_xticks(range(1, len(window_corr_data) + 1))
@@ -521,6 +523,166 @@ def create_overview_plot(df, output_dir):
         print(f'概要プロット作成エラー: {e}')
 
 
+def find_correlation_summary_files(input_path):
+    """
+    correlation_summary_*.csvファイルを再帰的に検索
+    
+    Args:
+        input_path (str): 検索開始パス（ファイルまたはフォルダ）
+        
+    Returns:
+        list: 見つかったファイルパスのリスト
+    """
+    correlation_files = []
+    
+    if os.path.isfile(input_path):
+        # 単一ファイルが指定された場合
+        if 'correlation_summary' in os.path.basename(input_path) and input_path.endswith('.csv'):
+            return [input_path]
+        else:
+            print(f"警告: 指定されたファイルはcorrelation_summaryファイルではありません: {input_path}")
+            return []
+    
+    # フォルダが指定された場合、再帰的に検索
+    if os.path.isdir(input_path):
+        search_patterns = [
+            '**/correlation_summary_*.csv',
+            'correlation_summary_*.csv'
+        ]
+        
+        for pattern in search_patterns:
+            files = list(Path(input_path).glob(pattern))
+            correlation_files.extend([str(f) for f in files])
+        
+        # 重複を除去
+        correlation_files = list(set(correlation_files))
+        correlation_files.sort()
+        
+        return correlation_files
+    
+    print(f"エラー: 指定されたパスが存在しません: {input_path}")
+    return []
+
+
+def process_single_correlation_file(input_file):
+    """
+    単一のcorrelation_summaryファイルを処理
+    
+    Args:
+        input_file (str): correlation_summary.csvファイルのパス
+        
+    Returns:
+        bool: 処理成功時True、失敗時False
+    """
+    print(f"\n{'='*80}")
+    print(f"処理中: {input_file}")
+    print(f"{'='*80}")
+    
+    # データ読み込み
+    df = load_correlation_summary(input_file)
+    if df is None or df.empty:
+        print(f"エラー: データの読み込みに失敗または空のデータです: {input_file}")
+        return False
+    
+    # 出力ディレクトリの設定（ファイルと同じ場所に作成）
+    input_dir = os.path.dirname(input_file)
+    output_dir = os.path.join(input_dir, 'correlation_visualizations')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"出力ディレクトリ: {output_dir}")
+    print()
+    
+    # 各セッションの可視化を作成
+    success_count = 0
+    total_sessions = len(df)
+    
+    for idx, session_data in df.iterrows():
+        print(f"  セッション処理中: {session_data['session_id']} ({idx+1}/{total_sessions})")
+        if create_session_visualization(session_data, output_dir):
+            success_count += 1
+    
+    # 概要プロットの作成
+    print("\n  概要プロットを作成中...")
+    create_overview_plot(df, output_dir)
+    
+    print(f"\n  ファイル処理完了")
+    print(f"  成功: {success_count}/{total_sessions} セッション")
+    print(f"  出力先: {output_dir}")
+    
+    return True
+
+
+def copy_overview_files_to_parent(correlation_files, input_path):
+    """
+    各子フォルダのcorrelation_overview.pngを親フォルダにコピー
+    
+    Args:
+        correlation_files (list): 処理したcorrelation_summaryファイルのリスト
+        input_path (str): 指定された入力パス
+    """
+    try:
+        # 入力パスがフォルダでない場合はスキップ
+        if not os.path.isdir(input_path):
+            return
+        
+        # 各correlation_summaryファイルのフォルダからoverviewファイルを探す
+        overview_files_to_copy = []
+        
+        for correlation_file in correlation_files:
+            # correlation_summaryファイルがあるディレクトリ
+            correlation_dir = os.path.dirname(correlation_file)
+            # 可視化フォルダ
+            visualization_dir = os.path.join(correlation_dir, 'correlation_visualizations')
+            # overviewファイル
+            overview_file = os.path.join(visualization_dir, 'correlation_overview.png')
+            
+            if os.path.exists(overview_file):
+                # 子フォルダ名を取得（input_pathからの相対パス）
+                rel_path = os.path.relpath(correlation_dir, input_path)
+                folder_name = rel_path.replace(os.sep, '_')  # パス区切り文字を_に置換
+                
+                # 特殊ケース: 同じフォルダの場合はスキップ
+                if folder_name == '.' or folder_name == '':
+                    continue
+                
+                overview_files_to_copy.append({
+                    'source': overview_file,
+                    'folder_name': folder_name
+                })
+        
+        # 子フォルダが存在しない場合はスキップ
+        if not overview_files_to_copy:
+            print("\n概要ファイルコピー: 子フォルダが存在しないためスキップ")
+            return
+        
+        print(f"\n概要ファイルを親フォルダにコピー中...")
+        
+        copy_count = 0
+        for item in overview_files_to_copy:
+            source_file = item['source']
+            folder_name = item['folder_name']
+            
+            # コピー先ファイル名
+            dest_filename = f"{folder_name}_correlation_overview.png"
+            dest_file = os.path.join(input_path, dest_filename)
+            
+            try:
+                shutil.copy2(source_file, dest_file)
+                print(f"  コピー完了: {dest_filename}")
+                copy_count += 1
+            except Exception as e:
+                print(f"  コピーエラー: {folder_name} -> {e}")
+        
+        if copy_count > 0:
+            print(f"概要ファイルコピー完了: {copy_count}件")
+            print(f"コピー先: {input_path}")
+        else:
+            print("概要ファイルコピー: コピー対象ファイルなし")
+        
+    except Exception as e:
+        print(f"概要ファイルコピーエラー: {e}")
+
+
 def main():
     """メイン処理"""
     print("相関係数可視化プログラム")
@@ -528,48 +690,49 @@ def main():
 
     # コマンドライン引数の処理
     if len(sys.argv) < 2:
-        print("使用法: python correlation_visualizer.py <correlation_summary.csv>")
+        print("使用法: python correlation_visualizer.py <correlation_summary.csv または フォルダパス>")
         print("例: python correlation_visualizer.py correlation_summary_3.0Hz.csv")
+        print("例: python correlation_visualizer.py hatano/")
+        print("例: python correlation_visualizer.py .")
         sys.exit(1)
 
-    input_file = sys.argv[1]
+    input_path = sys.argv[1]
+    original_input_path = input_path  # 最後のコピー処理用に保存
 
-    if not os.path.exists(input_file):
-        print(f"エラー: ファイルが見つかりません: {input_file}")
+    if not os.path.exists(input_path):
+        print(f"エラー: パスが見つかりません: {input_path}")
         sys.exit(1)
-
-    # データ読み込み
-    df = load_correlation_summary(input_file)
-    if df is None or df.empty:
-        print("エラー: データの読み込みに失敗または空のデータです")
+    
+    # correlation_summaryファイルを検索
+    correlation_files = find_correlation_summary_files(input_path)
+    
+    if not correlation_files:
+        print(f"エラー: correlation_summary_*.csvファイルが見つかりません: {input_path}")
         sys.exit(1)
-
-    # 出力ディレクトリの設定
-    input_dir = os.path.dirname(input_file) if os.path.dirname(input_file) else '.'
-    output_dir = os.path.join(input_dir, 'correlation_visualizations')
-    os.makedirs(output_dir, exist_ok=True)
-
-    print(f"出力ディレクトリ: {output_dir}")
+    
+    print(f"見つかったファイル数: {len(correlation_files)}")
+    for i, file_path in enumerate(correlation_files, 1):
+        print(f"  {i}. {file_path}")
     print()
 
-    # 各セッションの可視化を作成
-    success_count = 0
-    total_sessions = len(df)
-
-    for idx, session_data in df.iterrows():
-        print(f"処理中: {session_data['session_id']} ({idx+1}/{total_sessions})")
-        if create_session_visualization(session_data, output_dir):
-            success_count += 1
-
-    # 概要プロットの作成
-    print("\n概要プロットを作成中...")
-    create_overview_plot(df, output_dir)
-
-    print(f"\n{'='*50}")
-    print(f"可視化完了")
-    print(f"成功: {success_count}/{total_sessions} セッション")
-    print(f"出力先: {output_dir}")
-    print(f"{'='*50}")
+    # 各ファイルを処理
+    total_success_count = 0
+    total_file_count = len(correlation_files)
+    
+    for file_idx, correlation_file in enumerate(correlation_files, 1):
+        print(f"\nファイル {file_idx}/{total_file_count} を処理中...")
+        if process_single_correlation_file(correlation_file):
+            total_success_count += 1
+    
+    # 概要ファイルを親フォルダにコピー
+    copy_overview_files_to_parent(correlation_files, input_path)
+    
+    print(f"\n{'='*80}")
+    print(f"全体処理完了")
+    print(f"処理ファイル数: {total_file_count}")
+    print(f"成功: {total_success_count}")
+    print(f"失敗: {total_file_count - total_success_count}")
+    print(f"{'='*80}")
 
 
 if __name__ == '__main__':

@@ -730,22 +730,23 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
         has_visual_corr = True
 
     # GVS/音響との相関をプロット
-    has_stimulus_corr = False
-    if folder_type == 'gvs':
-        if 'correlation_angle_gvs_sine' in df.columns:
-            axes[corr_plot_idx].plot(df['psychopy_time'], df['correlation_angle_gvs_sine'], 
-                                    color='blue', alpha=0.7, linewidth=1.5, label='角度変化 vs GVS sine_internal')
-            has_stimulus_corr = True
-        elif 'correlation_angle_gvs' in df.columns:
-            axes[corr_plot_idx].plot(df['psychopy_time'], df['correlation_angle_gvs'], 
+    has_gvs_corr = False
+    has_audio_corr = False
+    if folder_type == 'gvs' or folder_type == 'all':
+        if 'correlation_angle_gvs' in df.columns:
+            axes[corr_plot_idx].plot(df['psychopy_time'], df['correlation_angle_gvs'],
                                     color='blue', alpha=0.7, linewidth=1.5, label='角度変化 vs GVS DAC')
-            has_stimulus_corr = True
+            has_gvs_corr = True
+        elif 'correlation_angle_gvs_sine' in df.columns:
+            axes[corr_plot_idx].plot(df['psychopy_time'], df['correlation_angle_gvs_sine'],
+                                    color='blue', alpha=0.7, linewidth=1.5, label='角度変化 vs GVS sine_internal')
+            has_gvs_corr = True
 
-    elif folder_type == 'audio':
+    if folder_type == 'audio' or folder_type == 'all':
         if 'correlation_angle_audio' in df.columns:
-            axes[corr_plot_idx].plot(df['psychopy_time'], df['correlation_angle_audio'], 
+            axes[corr_plot_idx].plot(df['psychopy_time'], df['correlation_angle_audio'],
                                     color='blue', alpha=0.7, linewidth=1.5, label='角度変化 vs 音響角度変化')
-            has_stimulus_corr = True
+            has_audio_corr = True
 
     # 相関プロットの設定
     axes[corr_plot_idx].axhline(y=0, color='black', linestyle='--', alpha=0.5)
@@ -753,9 +754,11 @@ def plot_sway_data(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is
     axes[corr_plot_idx].set_ylabel('相関係数')
     axes[corr_plot_idx].set_xlabel('時間 (秒)')
 
-    if has_stimulus_corr and folder_type == 'gvs':
+    if has_gvs_corr and has_audio_corr and folder_type == 'all':
+        title_suffix = 'vs 視覚刺激・GVS刺激・音刺激'
+    elif has_gvs_corr and folder_type == 'gvs':
         title_suffix = 'vs 視覚刺激・GVS刺激'
-    elif has_stimulus_corr and folder_type == 'audio':
+    elif has_audio_corr and folder_type == 'audio':
         title_suffix = 'vs 視覚刺激・音刺激'
     elif has_visual_corr:
         title_suffix = 'vs 視覚刺激'

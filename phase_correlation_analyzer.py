@@ -62,6 +62,44 @@ DATA_END_TIME = None    # 終了時刻（秒）、例: 60.0
 ENABLE_AUDIO_FILTER = False
 
 
+def normalize_signal(data, target_range=(-1, 1)):
+    """
+    信号を指定した範囲に正規化
+
+    Args:
+        data (array): 入力データ
+        target_range (tuple): 正規化後の範囲 (min, max) - デフォルト(-1, 1)
+
+    Returns:
+        array: 正規化されたデータ
+    """
+    try:
+        # NaNを除外してデータ範囲を計算
+        clean_data = data[~np.isnan(data)]
+        if len(clean_data) == 0:
+            return data.copy()
+        
+        data_min = np.min(clean_data)
+        data_max = np.max(clean_data)
+        
+        # データ範囲がゼロの場合は正規化しない
+        if data_max == data_min:
+            return np.zeros_like(data)
+        
+        # 0~1に正規化
+        normalized = (data - data_min) / (data_max - data_min)
+        
+        # 目標範囲にスケーリング
+        target_min, target_max = target_range
+        scaled = normalized * (target_max - target_min) + target_min
+        
+        return scaled
+        
+    except Exception as e:
+        print(f"正規化エラー: {e}")
+        return data.copy()
+
+
 def apply_lowpass_filter(data, cutoff_freq=3.0, fs=60.0, order=4):
     """
     ローパスフィルタを適用して身体動揺成分を抽出
@@ -362,29 +400,33 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
         # フィルタ処理結果を格納するデータフレーム
         filtered_df = df.copy()
 
-        print(f"  - {cutoff_freq}Hzローパスフィルタ適用（位相解析用）:")
+        print(f"  - {cutoff_freq}Hzローパスフィルタ適用・正規化（位相解析用）:")
 
-        # 角度データのフィルタ処理
+        # 角度データのフィルタ処理・正規化
         if 'angle_change' in df.columns:
-            filtered_df['angle_change_filtered'] = apply_lowpass_filter(df['angle_change'].values, cutoff_freq, estimated_fs)
-            print(f"    - angle_change")
+            filtered_data = apply_lowpass_filter(df['angle_change'].values, cutoff_freq, estimated_fs)
+            filtered_df['angle_change_filtered'] = normalize_signal(filtered_data)
+            print(f"    - angle_change (正規化: -1~1)")
 
-        # 視覚刺激データのフィルタ処理
+        # 視覚刺激データのフィルタ処理・正規化
         visual_cols = ['red_dot_mean_x', 'green_dot_mean_x', 'red_dot_x_change', 'green_dot_x_change']
         for col in visual_cols:
             if col in df.columns:
-                filtered_df[f'{col}_filtered'] = apply_lowpass_filter(df[col].values, cutoff_freq, estimated_fs)
-                print(f"    - {col}")
+                filtered_data = apply_lowpass_filter(df[col].values, cutoff_freq, estimated_fs)
+                filtered_df[f'{col}_filtered'] = normalize_signal(filtered_data)
+                print(f"    - {col} (正規化: -1~1)")
 
-        # GVSデータのフィルタ処理
+        # GVSデータのフィルタ処理・正規化
         if 'gvs_dac_output' in df.columns:
-            filtered_df['gvs_dac_output_filtered'] = apply_lowpass_filter(df['gvs_dac_output'].values, cutoff_freq, estimated_fs)
-            print(f"    - gvs_dac_output")
+            filtered_data = apply_lowpass_filter(df['gvs_dac_output'].values, cutoff_freq, estimated_fs)
+            filtered_df['gvs_dac_output_filtered'] = normalize_signal(filtered_data)
+            print(f"    - gvs_dac_output (正規化: -1~1)")
 
-        # 音響データのフィルタ処理
+        # 音響データのフィルタ処理・正規化
         if 'audio_angle_change' in df.columns:
-            filtered_df['audio_angle_change_filtered'] = apply_lowpass_filter(df['audio_angle_change'].values, cutoff_freq, estimated_fs)
-            print(f"    - audio_angle_change")
+            filtered_data = apply_lowpass_filter(df['audio_angle_change'].values, cutoff_freq, estimated_fs)
+            filtered_df['audio_angle_change_filtered'] = normalize_signal(filtered_data)
+            print(f"    - audio_angle_change (正規化: -1~1)")
 
         print(f"  - フィルタ処理完了: {len(filtered_df)} samples, {len(filtered_df.columns)} columns")
 
@@ -751,14 +793,20 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
 
     # 1. フィルタ済み信号
     if 'angle_change_filtered' in df.columns:
-        axes[0].plot(df['psychopy_time'], df['angle_change_filtered'], label='角度変化(フィルタ済み)', color='orange', linewidth=1.5)
+        axes[0].plot(df['psychopy_time'], df['angle_change_filtered'], label='角度変化(正規化済み)', color='orange', linewidth=1.5)
         if 'audio_angle_change_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['audio_angle_change_filtered'], label='音響角度変化(フィルタ済み)', color='blue', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['audio_angle_change_filtered'], label='音響角度変化(正規化済み)', color='blue', alpha=0.7)
         if 'gvs_dac_output_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['gvs_dac_output_filtered'], label='GVS出力(フィルタ済み)', color='blue', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['gvs_dac_output_filtered'], label='GVS出力(正規化済み)', color='blue', alpha=0.7)
+        if 'red_dot_x_change_filtered' in df.columns:
+            axes[0].plot(df['psychopy_time'], df['red_dot_x_change_filtered'], label='赤ドット変化(正規化済み)', color='red', alpha=0.7)
+        if 'green_dot_x_change_filtered' in df.columns:
+            axes[0].plot(df['psychopy_time'], df['green_dot_x_change_filtered'], label='緑ドット変化(正規化済み)', color='green', alpha=0.7)
 
-    axes[0].set_title(f'フィルタ済み信号 ({cutoff_freq}Hz LPF)')
-    axes[0].set_ylabel('振幅')
+    axes[0].set_title(f'フィルタ済み信号 ({cutoff_freq}Hz LPF, 正規化済み)')
+    axes[0].set_ylabel('正規化振幅 (-1~1)')
+    axes[0].set_ylim(-1.2, 1.2)
+    axes[0].axhline(y=0, color='black', linestyle='--', alpha=0.5)
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
@@ -769,6 +817,10 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
             axes[1].plot(df['psychopy_time'], np.degrees(df['audio_phase']), label='音響位相', color='blue', alpha=0.7)
         if 'gvs_phase' in df.columns:
             axes[1].plot(df['psychopy_time'], np.degrees(df['gvs_phase']), label='GVS位相', color='blue', alpha=0.7)
+        if 'red_dot_phase' in df.columns:
+            axes[1].plot(df['psychopy_time'], np.degrees(df['red_dot_phase']), label='赤ドット位相', color='red', alpha=0.7)
+        if 'green_dot_phase' in df.columns:
+            axes[1].plot(df['psychopy_time'], np.degrees(df['green_dot_phase']), label='緑ドット位相', color='green', alpha=0.7)
 
     axes[1].set_title('位相データ')
     axes[1].set_ylabel('位相 (度)')

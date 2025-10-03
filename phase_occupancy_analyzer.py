@@ -167,7 +167,56 @@ def sample_files_randomly(files, num_samples=3):
         return random.sample(files, num_samples)
 
 
-def process_subject_condition(subject_folder, subject_name, condition, num_samples=3, cutoff_freq=3.0):
+def sample_files_with_priority(files, num_samples=3, priority_sessions=None):
+    """
+    優先セッションを考慮したファイルサンプリング
+
+    Args:
+        files (list): ファイルパスのリスト
+        num_samples (int): サンプル数
+        priority_sessions (list): 優先的に選択するセッションIDのリスト
+
+    Returns:
+        list: サンプリングされたファイルパスのリスト（優先セッションは最初に配置）
+    """
+    if not priority_sessions:
+        return sample_files_randomly(files, num_samples)
+
+    selected_files = []
+    other_files = files.copy()
+
+    # 各優先セッションについて処理
+    for priority_session in priority_sessions:
+        # 優先セッションに該当するファイルを検索
+        priority_files = [f for f in other_files if priority_session in os.path.basename(f)]
+
+        if priority_files:
+            # 優先セッションのファイルを1つ選択
+            selected_file = priority_files[0]
+            selected_files.append(selected_file)
+            other_files.remove(selected_file)  # 選択したファイルを除外
+            print(f"    優先セッション {priority_session} を選択")
+
+            # サンプル数に達した場合は終了
+            if len(selected_files) >= num_samples:
+                break
+        else:
+            print(f"    警告: 優先セッション {priority_session} が見つかりません")
+
+    # 残りのサンプル数を計算
+    remaining_samples = num_samples - len(selected_files)
+
+    # 残りをランダムサンプリング
+    if remaining_samples > 0 and other_files:
+        if len(other_files) <= remaining_samples:
+            selected_files.extend(other_files)
+        else:
+            selected_files.extend(random.sample(other_files, remaining_samples))
+
+    return selected_files
+
+
+def process_subject_condition(subject_folder, subject_name, condition, num_samples=3, cutoff_freq=3.0, priority_sessions=None):
     """
     被験者の特定条件について占有時間を処理
 
@@ -190,8 +239,8 @@ def process_subject_condition(subject_folder, subject_name, condition, num_sampl
         print(f"    警告: {condition}条件でファイルが見つかりません")
         return []
 
-    # ランダムサンプリング
-    sampled_files = sample_files_randomly(files, num_samples)
+    # 優先セッション考慮のサンプリング
+    sampled_files = sample_files_with_priority(files, num_samples, priority_sessions)
     print(f"    {len(files)}ファイル中{len(sampled_files)}ファイルをサンプリング")
 
     occupancy_data = []
@@ -375,6 +424,7 @@ def main():
     parser.add_argument('--samples', type=int, default=3, help='各被験者からのサンプル数（デフォルト: 3）')
     parser.add_argument('--freq', type=float, default=3.0, help='カットオフ周波数（デフォルト: 3.0Hz）')
     parser.add_argument('--output', type=str, default='.', help='出力ディレクトリ（デフォルト: 現在のディレクトリ）')
+    parser.add_argument('--priority-session', type=str, help='優先的にピックアップするセッションID（複数指定可能、カンマ区切り）（例: 20250930_222200,20250930_225028）')
 
     args = parser.parse_args()
 
@@ -382,11 +432,19 @@ def main():
     num_samples = args.samples
     cutoff_freq = args.freq
     output_dir = args.output
+    priority_session_arg = getattr(args, 'priority_session', None)
+
+    # 優先セッションをリストに変換（カンマ区切り対応）
+    priority_sessions = []
+    if priority_session_arg:
+        priority_sessions = [s.strip() for s in priority_session_arg.split(',') if s.strip()]
 
     print(f"被験者: {', '.join(subject_folders)}")
     print(f"サンプル数: {num_samples}")
     print(f"カットオフ周波数: {cutoff_freq}Hz")
     print(f"出力ディレクトリ: {output_dir}")
+    if priority_sessions:
+        print(f"優先セッション: {', '.join(priority_sessions)}")
     print()
 
     # 出力ディレクトリを作成
@@ -414,7 +472,7 @@ def main():
 
             # 被験者の条件データを処理
             occupancy_data = process_subject_condition(
-                subject_folder, subject_name, condition, num_samples, cutoff_freq
+                subject_folder, subject_name, condition, num_samples, cutoff_freq, priority_sessions
             )
 
             all_occupancy_data.extend(occupancy_data)

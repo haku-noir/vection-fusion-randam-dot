@@ -8,9 +8,15 @@ angle_changeと各刺激との位相差・位相相関を計算・解析する
 機能:
 1. integrated_analysis.csvファイルを再帰的に検索・読み込み
 2. 加速度、視覚刺激、音響、GVSデータに3Hzローパスフィルタ適用
-3. angle_changeと各刺激との位相差計算
-4. 位相相関（circular correlation）の計算
-5. 位相解析結果のCSV出力とグラフ作成
+3. ロックインアンプ原理（同相・直交成分）による位相計算
+4. angle_changeと各刺激との位相差計算
+5. 位相相関（circular correlation）の計算
+6. 位相解析結果のCSV出力とグラフ作成
+
+位相計算手法:
+- 指定周波数（0.1Hz）の理想的な正弦波・余弦波を基準信号として生成
+- 入力信号と基準信号を掛け合わせ、ローパスフィルタで同相成分(I)と直交成分(Q)を抽出
+- arctan2(Q, I)で位相を計算し、unwrapで連続化
 
 使用例:
     python phase_correlation_analyzer.py hatano/
@@ -19,7 +25,7 @@ angle_changeと各刺激との位相差・位相相関を計算・解析する
 
 import pandas as pd
 import numpy as np
-from scipy.signal import butter, filtfilt, hilbert
+from scipy.signal import butter, filtfilt
 from scipy.stats import circmean, circstd
 import matplotlib.pyplot as plt
 import os
@@ -78,23 +84,23 @@ def normalize_signal(data, target_range=(-1, 1)):
         clean_data = data[~np.isnan(data)]
         if len(clean_data) == 0:
             return data.copy()
-        
+
         data_min = np.min(clean_data)
         data_max = np.max(clean_data)
-        
+
         # データ範囲がゼロの場合は正規化しない
         if data_max == data_min:
             return np.zeros_like(data)
-        
+
         # 0~1に正規化
         normalized = (data - data_min) / (data_max - data_min)
-        
+
         # 目標範囲にスケーリング
         target_min, target_max = target_range
         scaled = normalized * (target_max - target_min) + target_min
-        
+
         return scaled
-        
+
     except Exception as e:
         print(f"正規化エラー: {e}")
         return data.copy()
@@ -138,25 +144,45 @@ def apply_lowpass_filter(data, cutoff_freq=3.0, fs=60.0, order=4):
         return data.copy()
 
 
-def calculate_phase_from_signal(signal):
+def calculate_phase_from_signal(signal, target_frequency=0.1, fs=60.0):
     """
-    信号から位相を計算（ヒルベルト変換を使用）
-    
+    信号から位相を計算（ロックインアンプ原理：同相・直交成分を使用）
+
     Args:
         signal (array): 入力信号
-        
+        target_frequency (float): 目標周波数 (Hz) - デフォルト0.1Hz
+        fs (float): サンプリング周波数 (Hz) - デフォルト60Hz
+
     Returns:
-        array: 位相（ラジアン、-π ~ π）
+        array: 位相（ラジアン、連続的な位相変化）
     """
     try:
-        # ヒルベルト変換で複素包絡を計算
-        analytic_signal = hilbert(signal)
-        
-        # 位相を抽出
-        phase = np.angle(analytic_signal)
-        
+        # 時間軸を生成
+        n_samples = len(signal)
+        t = np.arange(n_samples) / fs
+
+        # 基準信号（正弦波と余弦波）を生成
+        reference_sin = np.sin(2 * np.pi * target_frequency * t)  # 直交成分用
+        reference_cos = np.cos(2 * np.pi * target_frequency * t)  # 同相成分用
+
+        # 入力信号と基準信号を掛け合わせ
+        I_raw = signal * reference_cos  # 同相成分（生信号）
+        Q_raw = signal * reference_sin  # 直交成分（生信号）
+
+        # ローパスフィルタを適用して目標周波数成分を抽出
+        # カットオフ周波数は目標周波数の2倍程度に設定
+        cutoff_freq = target_frequency * 2.0
+        I = apply_lowpass_filter(I_raw, cutoff_freq, fs, order=4)  # 同相成分
+        Q = apply_lowpass_filter(Q_raw, cutoff_freq, fs, order=4)  # 直交成分
+
+        # 位相を計算（arctan2でQ/Iの角度）
+        phase_raw = np.arctan2(Q, I)
+
+        # 位相の連続化（2πジャンプを補正）
+        phase = np.unwrap(phase_raw)
+
         return phase
-        
+
     except Exception as e:
         print(f"位相計算エラー: {e}")
         return np.full(len(signal), np.nan)
@@ -165,23 +191,23 @@ def calculate_phase_from_signal(signal):
 def calculate_phase_difference(phase1, phase2):
     """
     2つの位相間の位相差を計算
-    
+
     Args:
         phase1 (array): 位相1（ラジアン）
         phase2 (array): 位相2（ラジアン）
-        
+
     Returns:
         array: 位相差（ラジアン、-π ~ π）
     """
     try:
         # 位相差を計算
         phase_diff = phase1 - phase2
-        
+
         # -π ~ π の範囲に正規化
         phase_diff = np.angle(np.exp(1j * phase_diff))
-        
+
         return phase_diff
-        
+
     except Exception as e:
         print(f"位相差計算エラー: {e}")
         return np.full(len(phase1), np.nan)
@@ -190,11 +216,11 @@ def calculate_phase_difference(phase1, phase2):
 def calculate_circular_correlation(phase1, phase2):
     """
     2つの位相間の円形相関係数を計算
-    
+
     Args:
         phase1 (array): 位相1（ラジアン）
         phase2 (array): 位相2（ラジアン）
-        
+
     Returns:
         float: 円形相関係数（-1 ~ +1）
                 +1: 同位相（0度差）
@@ -206,21 +232,21 @@ def calculate_circular_correlation(phase1, phase2):
         mask = ~(np.isnan(phase1) | np.isnan(phase2))
         if np.sum(mask) < 10:  # 最小サンプル数チェック
             return np.nan
-        
+
         clean_phase1 = phase1[mask]
         clean_phase2 = phase2[mask]
-        
+
         # 位相差を計算
         phase_diff = calculate_phase_difference(clean_phase1, clean_phase2)
-        
+
         # 円形相関係数を計算
         # mean(exp(i * phase_diff))の実部を取得
         # cos(位相差の平均) = 位相の一致度
         complex_mean = np.mean(np.exp(1j * phase_diff))
         circular_correlation = np.real(complex_mean)  # 実部を取得（-1 ~ +1）
-        
+
         return circular_correlation
-        
+
     except Exception as e:
         print(f"円形相関計算エラー: {e}")
         return np.nan
@@ -229,39 +255,39 @@ def calculate_circular_correlation(phase1, phase2):
 def calculate_windowed_phase_correlation(phase1, phase2, window_sec=10.0, fs=60.0):
     """
     窓相関（移動窓位相相関）を計算
-    
+
     Args:
         phase1 (array): 位相1（例: angle_changeの位相）
         phase2 (array): 位相2（例: 刺激の位相）
         window_sec (float): 窓のサイズ（秒） - デフォルト10秒
         fs (float): サンプリング周波数 (Hz) - デフォルト60Hz
-        
+
     Returns:
         array: 窓位相相関係数の時系列データ
     """
     try:
         # 窓サイズをサンプル数に変換
         window_samples = int(window_sec * fs)
-        
+
         if window_samples >= len(phase1):
             return np.full(len(phase1), np.nan)
-        
+
         # 結果配列の初期化
         correlations = np.full(len(phase1), np.nan)
-        
+
         # 移動窓で位相相関を計算
         for i in range(window_samples // 2, len(phase1) - window_samples // 2):
             start_idx = i - window_samples // 2
             end_idx = i + window_samples // 2 + 1
-            
+
             window_phase1 = phase1[start_idx:end_idx]
             window_phase2 = phase2[start_idx:end_idx]
-            
+
             # 窓内の位相相関を計算
             correlations[i] = calculate_circular_correlation(window_phase1, window_phase2)
-        
+
         return correlations
-        
+
     except Exception as e:
         print(f"窓位相相関計算エラー: {e}")
         return np.full(len(phase1), np.nan)
@@ -270,13 +296,13 @@ def calculate_windowed_phase_correlation(phase1, phase2, window_sec=10.0, fs=60.
 def trim_data_by_time_range(df, start_time=None, end_time=None, time_column='psychopy_time'):
     """
     指定した時間範囲でデータフレームを切り出し
-    
+
     Args:
         df (pd.DataFrame): 入力データフレーム
         start_time (float): 開始時刻（秒）、Noneの場合は最初から
         end_time (float): 終了時刻（秒）、Noneの場合は最後まで
         time_column (str): 時刻カラム名
-        
+
     Returns:
         pd.DataFrame: 切り出されたデータフレーム
         dict: 切り出し情報
@@ -285,37 +311,37 @@ def trim_data_by_time_range(df, start_time=None, end_time=None, time_column='psy
         if time_column not in df.columns:
             print(f"警告: 時刻カラム'{time_column}'が見つかりません")
             return df.copy(), {'trimmed': False, 'reason': f'Missing {time_column} column'}
-        
+
         original_length = len(df)
         original_duration = df[time_column].max() - df[time_column].min()
-        
+
         # データの時間範囲を取得
         data_start = df[time_column].min()
         data_end = df[time_column].max()
-        
+
         # 切り出し範囲を決定
         trim_start = data_start if start_time is None else max(data_start, start_time)
         trim_end = data_end if end_time is None else min(data_end, end_time)
-        
+
         # 範囲チェック
         if trim_start >= trim_end:
             print(f"警告: 不正な時間範囲 - 開始: {trim_start:.1f}s, 終了: {trim_end:.1f}s")
             return df.copy(), {'trimmed': False, 'reason': 'Invalid time range'}
-        
+
         # データを切り出し
         mask = (df[time_column] >= trim_start) & (df[time_column] <= trim_end)
         trimmed_df = df[mask].copy()
-        
+
         if len(trimmed_df) == 0:
             print(f"警告: 指定した時間範囲にデータがありません")
             return df.copy(), {'trimmed': False, 'reason': 'No data in specified range'}
-        
+
         # インデックスをリセット
         trimmed_df = trimmed_df.reset_index(drop=True)
-        
+
         trimmed_length = len(trimmed_df)
         trimmed_duration = trimmed_df[time_column].max() - trimmed_df[time_column].min()
-        
+
         trim_info = {
             'trimmed': True,
             'original_length': original_length,
@@ -329,14 +355,14 @@ def trim_data_by_time_range(df, start_time=None, end_time=None, time_column='psy
             'start_specified': start_time is not None,
             'end_specified': end_time is not None
         }
-        
+
         print(f"  データ切り出し:")
         print(f"    元データ: {original_length}サンプル ({original_duration:.1f}秒)")
         print(f"    切り出し範囲: {trim_start:.1f}s - {trim_end:.1f}s")
         print(f"    切り出し後: {trimmed_length}サンプル ({trimmed_duration:.1f}秒)")
-        
+
         return trimmed_df, trim_info
-        
+
     except Exception as e:
         print(f"データ切り出しエラー: {e}")
         return df.copy(), {'trimmed': False, 'reason': f'Error: {e}'}
@@ -367,11 +393,11 @@ def find_integrated_analysis_files(input_path):
 def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
     """
     integrated_analysisファイルを読み込み、位相解析用にフィルタ処理
-    
+
     Args:
         filepath (str): integrated_analysis.csvファイルのパス
         cutoff_freq (float): ローパスフィルタのカットオフ周波数 (Hz)
-        
+
     Returns:
         pd.DataFrame: フィルタ処理済みデータフレーム
     """
@@ -380,7 +406,7 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
         df = pd.read_csv(filepath)
         print(f"\n統合データを読み込み: {os.path.basename(filepath)}")
         print(f"  - 元データ: {len(df)} samples, {len(df.columns)} columns")
-        
+
         # データ切り出し処理
         if DATA_START_TIME is not None or DATA_END_TIME is not None:
             df, trim_info = trim_data_by_time_range(df, DATA_START_TIME, DATA_END_TIME)
@@ -432,9 +458,13 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
 
         # 位相計算
         print(f"  - 位相計算:")
-        
+
         if 'angle_change_filtered' in filtered_df.columns:
-            filtered_df['angle_change_phase'] = calculate_phase_from_signal(filtered_df['angle_change_filtered'].values)
+            filtered_df['angle_change_phase'] = calculate_phase_from_signal(
+                filtered_df['angle_change_filtered'].values, 
+                target_frequency=0.1,  # 0.1Hz（身体動揺の主要周波数）
+                fs=estimated_fs
+            )
             print(f"    - angle_change位相")
 
         # 各刺激の位相計算
@@ -444,23 +474,27 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
             ('red_dot_x_change_filtered', 'red_dot_phase'),  
             ('green_dot_x_change_filtered', 'green_dot_phase')
         ]
-        
+
         for filtered_col, phase_col in stimulus_cols:
             if filtered_col in filtered_df.columns:
-                filtered_df[phase_col] = calculate_phase_from_signal(filtered_df[filtered_col].values)
+                filtered_df[phase_col] = calculate_phase_from_signal(
+                    filtered_df[filtered_col].values,
+                    target_frequency=0.1,  # 0.1Hz（身体動揺の主要周波数）
+                    fs=estimated_fs
+                )
                 print(f"    - {filtered_col}の位相")
 
         # 位相差計算
         if 'angle_change_phase' in filtered_df.columns:
             print(f"  - 位相差計算:")
-            
+
             phase_diff_cols = [
                 ('audio_phase', 'audio_phase_diff'),
                 ('gvs_phase', 'gvs_phase_diff'),
                 ('red_dot_phase', 'red_dot_phase_diff'),
                 ('green_dot_phase', 'green_dot_phase_diff')
             ]
-            
+
             for phase_col, diff_col in phase_diff_cols:
                 if phase_col in filtered_df.columns:
                     filtered_df[diff_col] = calculate_phase_difference(
@@ -472,14 +506,14 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
         # 窓位相相関の計算
         if 'angle_change_phase' in filtered_df.columns:
             print(f"  - 窓位相相関計算 (窓サイズ: 10秒):")
-            
+
             window_corr_cols = [
                 ('audio_phase', 'phase_correlation_angle_audio'),
                 ('gvs_phase', 'phase_correlation_angle_gvs'),
                 ('red_dot_phase', 'phase_correlation_angle_red_dot'),
                 ('green_dot_phase', 'phase_correlation_angle_green_dot')
             ]
-            
+
             for phase_col, corr_col in window_corr_cols:
                 if phase_col in filtered_df.columns:
                     filtered_df[corr_col] = calculate_windowed_phase_correlation(
@@ -502,10 +536,10 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
 def calculate_phase_statistics(phase_data):
     """
     位相データの統計情報を計算
-    
+
     Args:
         phase_data (array): 位相データ（ラジアン）
-        
+
     Returns:
         dict: 統計情報
     """
@@ -516,14 +550,14 @@ def calculate_phase_statistics(phase_data):
                 'mean_phase': np.nan, 'std_phase': np.nan, 'concentration': np.nan,
                 'mean_phase_deg': np.nan, 'std_phase_deg': np.nan
             }
-        
+
         # 円形統計
         mean_phase = circmean(clean_data)
         std_phase = circstd(clean_data)
-        
+
         # 集中度パラメータ（von Mises分布の推定）
         concentration = 1.0 / (std_phase ** 2) if std_phase > 0 else np.inf
-        
+
         return {
             'mean_phase': mean_phase,
             'std_phase': std_phase,
@@ -531,7 +565,7 @@ def calculate_phase_statistics(phase_data):
             'mean_phase_deg': np.degrees(mean_phase),
             'std_phase_deg': np.degrees(std_phase)
         }
-        
+
     except Exception as e:
         print(f"位相統計計算エラー: {e}")
         return {
@@ -543,14 +577,14 @@ def calculate_phase_statistics(phase_data):
 def calculate_file_phase_correlations(df, session_id, experiment_settings, condition, cutoff_freq=3.0):
     """
     単一ファイルの位相相関係数と統計情報を計算
-    
+
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
         session_id (str): セッションID
         experiment_settings (dict): 実験設定
         condition (str): 実験条件
         cutoff_freq (float): 使用したカットオフ周波数
-        
+
     Returns:
         dict: 位相相関係数、統計情報、実験情報を含むディクショナリ
     """
@@ -569,7 +603,7 @@ def calculate_file_phase_correlations(df, session_id, experiment_settings, condi
         # 全体位相相関を計算
         if 'angle_change_phase' in df.columns:
             angle_phase = df['angle_change_phase'].values
-            
+
             # 各刺激との位相相関
             phase_correlations = [
                 ('audio_phase', 'audio_phase_corr'),
@@ -577,7 +611,7 @@ def calculate_file_phase_correlations(df, session_id, experiment_settings, condi
                 ('red_dot_phase', 'red_dot_phase_corr'),
                 ('green_dot_phase', 'green_dot_phase_corr')
             ]
-            
+
             for phase_col, corr_col in phase_correlations:
                 if phase_col in df.columns:
                     stimulus_phase = df[phase_col].values
@@ -592,7 +626,7 @@ def calculate_file_phase_correlations(df, session_id, experiment_settings, condi
                 ('red_dot_phase_diff', 'red_dot_phase_diff'),
                 ('green_dot_phase_diff', 'green_dot_phase_diff')
             ]
-            
+
             for diff_col, prefix in phase_diff_stats:
                 if diff_col in df.columns:
                     phase_stats = calculate_phase_statistics(df[diff_col].values)
@@ -615,7 +649,7 @@ def calculate_file_phase_correlations(df, session_id, experiment_settings, condi
                 ('phase_correlation_angle_red_dot', 'red_dot_window_phase_corr'),
                 ('phase_correlation_angle_green_dot', 'green_dot_window_phase_corr')
             ]
-            
+
             for corr_col, prefix in window_corr_stats:
                 if corr_col in df.columns:
                     window_corr = df[corr_col].values
@@ -652,7 +686,7 @@ def calculate_file_phase_correlations(df, session_id, experiment_settings, condi
 def save_phase_data(df, output_path, cutoff_freq=3.0):
     """
     位相解析データをCSVファイルに保存
-    
+
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
         output_path (str): 出力ファイルパス
@@ -714,7 +748,7 @@ def save_phase_data(df, output_path, cutoff_freq=3.0):
 def save_integrated_phase_correlation_summary(correlation_data_list, folder_path, cutoff_freq=3.0):
     """
     フォルダ内の全ファイルの位相相関係数サマリーを統合して保存
-    
+
     Args:
         correlation_data_list (list): 各ファイルの位相相関係数データのリスト
         folder_path (str): 出力フォルダパス
@@ -748,7 +782,7 @@ def save_integrated_phase_correlation_summary(correlation_data_list, folder_path
 def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.0, is_scope_data=False, experiment_settings=None, condition='red'):
     """
     位相解析データのグラフを作成
-    
+
     Args:
         df (pd.DataFrame): フィルタ処理済みデータフレーム
         session_id (str): セッションID
@@ -795,7 +829,7 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
     if 'angle_change_filtered' in df.columns:
         axes[0].plot(df['psychopy_time'], df['angle_change_filtered'], label='角度変化(正規化済み)', color='orange', linewidth=1.5)
         if 'audio_angle_change_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['audio_angle_change_filtered'], label='音響角度変化(正規化済み)', color='blue', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['audio_angle_change_filtered'], label='音響角度変化(正規化済み)', color='darkblue', alpha=0.7)
         if 'gvs_dac_output_filtered' in df.columns:
             axes[0].plot(df['psychopy_time'], df['gvs_dac_output_filtered'], label='GVS出力(正規化済み)', color='blue', alpha=0.7)
         if 'red_dot_x_change_filtered' in df.columns:
@@ -814,7 +848,7 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
     if 'angle_change_phase' in df.columns:
         axes[1].plot(df['psychopy_time'], np.degrees(df['angle_change_phase']), label='角度変化位相', color='orange', linewidth=1.5)
         if 'audio_phase' in df.columns:
-            axes[1].plot(df['psychopy_time'], np.degrees(df['audio_phase']), label='音響位相', color='blue', alpha=0.7)
+            axes[1].plot(df['psychopy_time'], np.degrees(df['audio_phase']), label='音響位相', color='darkblue', alpha=0.7)
         if 'gvs_phase' in df.columns:
             axes[1].plot(df['psychopy_time'], np.degrees(df['gvs_phase']), label='GVS位相', color='blue', alpha=0.7)
         if 'red_dot_phase' in df.columns:
@@ -830,7 +864,7 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
 
     # 3. 位相差
     phase_diff_cols = [
-        ('audio_phase_diff', '音響位相差', 'blue'),
+        ('audio_phase_diff', '音響位相差', 'darkblue'),
         ('gvs_phase_diff', 'GVS位相差', 'blue'),
         ('red_dot_phase_diff', '赤ドット位相差', 'red'),
         ('green_dot_phase_diff', '緑ドット位相差', 'green')
@@ -849,7 +883,7 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
 
     # 4. 窓位相相関
     window_corr_cols = [
-        ('phase_correlation_angle_audio', '音響窓位相相関', 'blue'),
+        ('phase_correlation_angle_audio', '音響窓位相相関', 'darkblue'),
         ('phase_correlation_angle_gvs', 'GVS窓位相相関', 'blue'),
         ('phase_correlation_angle_red_dot', '赤ドット窓位相相関', 'red'),
         ('phase_correlation_angle_green_dot', '緑ドット窓位相相関', 'green')
@@ -878,7 +912,7 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
 
         # 各刺激との全体位相相関を計算
         correlation_items = [
-            ('audio_phase', '音響', 'blue'),
+            ('audio_phase', '音響', 'darkblue'),
             ('gvs_phase', 'GVS', 'blue'),
             ('red_dot_phase', '赤ドット', 'red'),
             ('green_dot_phase', '緑ドット', 'green')
@@ -954,11 +988,11 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
 def process_integrated_analysis_file(filepath, cutoff_freq=3.0):
     """
     単一のintegrated_analysisファイルを処理
-    
+
     Args:
         filepath (str): integrated_analysis.csvファイルのパス
         cutoff_freq (float): ローパスフィルタのカットオフ周波数
-        
+
     Returns:
         bool: 処理成功時True、失敗時False
     """
@@ -1025,13 +1059,13 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0):
     if filtered_df is not None:
         # 位相解析データを保存
         phase_data_file = save_phase_data(filtered_df, filepath, cutoff_freq)
-        
+
         # 位相解析グラフを作成
         plot_phase_analysis(filtered_df, session_id, folder_path, folder_type, cutoff_freq, is_scope_data, experiment_settings, condition)
-        
+
         # 位相相関係数を計算
         correlation_data = calculate_file_phase_correlations(filtered_df, session_id, experiment_settings, condition, cutoff_freq)
-        
+
         print(f"位相解析完了: {session_id}")
         return correlation_data
     else:
@@ -1061,7 +1095,7 @@ def main():
 
     print(f"入力パス: {input_path}")
     print(f"ローパスフィルタ周波数: {cutoff_freq}Hz")
-    
+
     # データ切り出し設定の表示
     if DATA_START_TIME is not None or DATA_END_TIME is not None:
         start_str = f'{DATA_START_TIME:.1f}s' if DATA_START_TIME is not None else '開始から'
@@ -1102,7 +1136,7 @@ def main():
         for filepath in files:
             total_file_count += 1
             correlation_data = process_integrated_analysis_file(filepath, cutoff_freq)
-            
+
             if correlation_data:
                 correlation_data_list.append(correlation_data)
                 total_success_count += 1

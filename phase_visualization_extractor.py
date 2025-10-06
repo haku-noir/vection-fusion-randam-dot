@@ -10,11 +10,8 @@ phase_correlation_analyzerから特定の図（フィルタ済み信号と窓位
 2. フィルタ済み信号の可視化とCSV出力
 3. 窓位相相関の可視化とCSV出力
 4. 各図を個別のPNGファイルとして保存
-
-使用例:
-    python phase_visualization_extractor.py hatano/
-    python phase_visualization_extractor.py .
 """
+
 
 import pandas as pd
 import numpy as np
@@ -104,6 +101,92 @@ DATA_START_TIME = 20  # 開始時刻（秒）
 DATA_END_TIME = None    # 終了時刻（秒）
 
 
+def save_normalization_info_csv(normalization_info, output_file):
+    """
+    規格化情報をCSVファイルに保存
+
+    Args:
+        normalization_info (dict): 規格化情報辞書
+        output_file (str): 出力ファイルパス
+    """
+    try:
+        # データを整理
+        data_rows = []
+        for signal_name, info in normalization_info.items():
+            data_rows.append({
+                'signal_name': signal_name,
+                'original_mean_amplitude': info.get('mean_amplitude', np.nan),
+                'scaling_factor': info.get('scaling_factor', np.nan),
+                'data_mean': info.get('data_mean', np.nan),
+                'target_mean_amplitude': info.get('target_mean_amplitude', np.nan)
+            })
+
+        # DataFrameを作成して保存
+        norm_df = pd.DataFrame(data_rows)
+        norm_df.to_csv(output_file, index=False)
+
+    except Exception as e:
+        print(f"規格化情報CSV保存エラー: {e}")
+
+
+def normalize_signal_with_info(data, target_range=(-1, 1)):
+    """
+    信号を平均振幅が1となるように規格化し、情報も返す
+
+    Args:
+        data (array): 入力データ
+        target_range (tuple): 規格化後の範囲 (min, max) - デフォルト(-1, 1)
+
+    Returns:
+        tuple: (規格化データ, 規格化情報辞書)
+    """
+    try:
+        # NaNを除外して統計量を計算
+        clean_data = data[~np.isnan(data)]
+        if len(clean_data) == 0:
+            return data.copy(), {'mean_amplitude': np.nan, 'scaling_factor': np.nan, 'data_mean': np.nan}
+
+        # 平均を計算
+        data_mean = np.mean(clean_data)
+
+        # 平均を引いて中心化
+        centered_data = data - data_mean
+
+        # 振幅（絶対値）の平均を計算
+        mean_amplitude = np.mean(np.abs(centered_data[~np.isnan(centered_data)]))
+
+        # 平均振幅がゼロの場合（一定値）はゼロ配列を返す
+        if mean_amplitude == 0:
+            return np.zeros_like(data), {'mean_amplitude': 0, 'scaling_factor': 0, 'data_mean': data_mean}
+
+        # 平均振幅が指定した範囲での目標振幅になるように規格化
+        target_min, target_max = target_range
+        target_mean_amplitude = (target_max - target_min) / 2  # 目標平均振幅
+
+        # スケーリング係数を計算
+        scaling_factor = target_mean_amplitude / mean_amplitude
+
+        # 平均振幅が目標値になるようにスケーリング
+        amplitude_normalized = centered_data * scaling_factor
+
+        # 中心をオフセット
+        scaled = amplitude_normalized + (target_max + target_min) / 2
+
+        # 規格化情報を作成
+        norm_info = {
+            'mean_amplitude': mean_amplitude,
+            'scaling_factor': scaling_factor,
+            'data_mean': data_mean,
+            'target_mean_amplitude': target_mean_amplitude
+        }
+
+        return scaled, norm_info
+
+    except Exception as e:
+        print(f"平均振幅規格化エラー: {e}")
+        return data.copy(), {'mean_amplitude': np.nan, 'scaling_factor': np.nan, 'data_mean': np.nan}
+
+
 def load_and_process_data(filepath, cutoff_freq=3.0):
     """
     integrated_analysisファイルを読み込み、位相解析用にフィルタ処理
@@ -113,7 +196,7 @@ def load_and_process_data(filepath, cutoff_freq=3.0):
         cutoff_freq (float): ローパスフィルタのカットオフ周波数 (Hz)
 
     Returns:
-        pd.DataFrame: フィルタ処理済みデータフレーム
+        tuple: (フィルタ処理済みデータフレーム, 規格化情報辞書)
     """
     try:
         # データ読み込み
@@ -139,29 +222,40 @@ def load_and_process_data(filepath, cutoff_freq=3.0):
         # フィルタ処理結果を格納するデータフレーム
         filtered_df = df.copy()
 
-        print(f"  - {cutoff_freq}Hzローパスフィルタ適用・正規化:")
+        # 規格化情報を格納する辞書
+        normalization_info = {}
 
-        # 角度データのフィルタ処理・正規化
+        print(f"  - {cutoff_freq}Hzローパスフィルタ適用・平均振幅規格化:")
+
+        # 角度データのフィルタ処理・平均振幅規格化
         if 'angle_change' in df.columns:
             filtered_data = apply_lowpass_filter(df['angle_change'].values, cutoff_freq, estimated_fs)
-            filtered_df['angle_change_filtered'] = normalize_signal(filtered_data)
+            filtered_df['angle_change_filtered'], norm_info = normalize_signal_with_info(filtered_data)
+            normalization_info['angle_change'] = norm_info
+            print(f"    - angle_change (平均振幅: {norm_info['mean_amplitude']:.4f})")
 
-        # 視覚刺激データのフィルタ処理・正規化
+        # 視覚刺激データのフィルタ処理・平均振幅規格化
         visual_cols = ['red_dot_x_change', 'green_dot_x_change']
         for col in visual_cols:
             if col in df.columns:
                 filtered_data = apply_lowpass_filter(df[col].values, cutoff_freq, estimated_fs)
-                filtered_df[f'{col}_filtered'] = normalize_signal(filtered_data)
+                filtered_df[f'{col}_filtered'], norm_info = normalize_signal_with_info(filtered_data)
+                normalization_info[col] = norm_info
+                print(f"    - {col} (平均振幅: {norm_info['mean_amplitude']:.4f})")
 
-        # GVSデータのフィルタ処理・正規化
+        # GVSデータのフィルタ処理・平均振幅規格化
         if 'gvs_dac_output' in df.columns:
             filtered_data = apply_lowpass_filter(df['gvs_dac_output'].values, cutoff_freq, estimated_fs)
-            filtered_df['gvs_dac_output_filtered'] = normalize_signal(filtered_data)
+            filtered_df['gvs_dac_output_filtered'], norm_info = normalize_signal_with_info(filtered_data)
+            normalization_info['gvs_dac_output'] = norm_info
+            print(f"    - gvs_dac_output (平均振幅: {norm_info['mean_amplitude']:.4f})")
 
-        # 音響データのフィルタ処理・正規化
+        # 音響データのフィルタ処理・平均振幅規格化
         if 'audio_angle_change' in df.columns:
             filtered_data = apply_lowpass_filter(df['audio_angle_change'].values, cutoff_freq, estimated_fs)
-            filtered_df['audio_angle_change_filtered'] = normalize_signal(filtered_data)
+            filtered_df['audio_angle_change_filtered'], norm_info = normalize_signal_with_info(filtered_data)
+            normalization_info['audio_angle_change'] = norm_info
+            print(f"    - audio_angle_change (平均振幅: {norm_info['mean_amplitude']:.4f})")
 
         # 位相計算
         if 'angle_change_filtered' in filtered_df.columns:
@@ -197,11 +291,11 @@ def load_and_process_data(filepath, cutoff_freq=3.0):
                         fs=estimated_fs
                     )
 
-        return filtered_df
+        return filtered_df, normalization_info
 
     except Exception as e:
         print(f"エラー: データ処理に失敗: {e}")
-        return None
+        return None, None
 
 
 def create_output_directory(folder_path):
@@ -230,7 +324,7 @@ def create_output_directory(folder_path):
         return None, None
 
 
-def plot_filtered_signals(df, session_id, output_dir, cutoff_freq=3.0, is_scope_data=False, experiment_settings=None, condition='red'):
+def plot_filtered_signals(df, session_id, output_dir, cutoff_freq=3.0, is_scope_data=False, experiment_settings=None, condition='red', normalization_info=None):
     """
     フィルタ済み信号のグラフを作成・保存
 
@@ -242,6 +336,7 @@ def plot_filtered_signals(df, session_id, output_dir, cutoff_freq=3.0, is_scope_
         is_scope_data (bool): オシロスコープデータかどうか
         experiment_settings (dict): 実験設定
         condition (str): 実験条件
+        normalization_info (dict): 規格化情報
     """
     try:
         if df is None or df.empty:
@@ -249,6 +344,7 @@ def plot_filtered_signals(df, session_id, output_dir, cutoff_freq=3.0, is_scope_
             return
 
         plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
+        plt.rcParams["font.size"] = 15
 
         # 単一グラフを作成
         fig, ax = plt.subplots(1, 1, figsize=(15, 6))
@@ -294,16 +390,16 @@ def plot_filtered_signals(df, session_id, output_dir, cutoff_freq=3.0, is_scope_
         if 'gvs_dac_output_filtered' in df.columns:
             ax.plot(df['psychopy_time'], df['gvs_dac_output_filtered'], label='平衡感覚刺激', color='blue', alpha=0.7)
         if 'red_dot_x_change_filtered' in df.columns:
-            ax.plot(df['psychopy_time'], df['red_dot_x_change_filtered'], label='視覚刺激（橙ドット）', color='red', alpha=0.7)
+            ax.plot(df['psychopy_time'], df['red_dot_x_change_filtered'], label='視覚刺激（赤色フロー）', color='red', alpha=0.7)
         if 'green_dot_x_change_filtered' in df.columns:
-            ax.plot(df['psychopy_time'], df['green_dot_x_change_filtered'], label='視覚刺激（緑ドット）', color='green', alpha=0.7)
+            ax.plot(df['psychopy_time'], df['green_dot_x_change_filtered'], label='視覚刺激（赤色フロー）', color='green', alpha=0.7)
 
         # ax.set_title(title, fontsize=14)
-        ax.set_ylabel('正規化振幅 (-1~1)')
-        ax.set_xlabel('時間 (秒)')
-        ax.set_ylim(-1.2, 1.2)
+        ax.set_ylabel('規格化振幅')
+        ax.set_xlabel('時間 [s]')
+        ax.set_ylim(-2.0, 2.2)
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
-        ax.legend()
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -335,11 +431,17 @@ def plot_filtered_signals(df, session_id, output_dir, cutoff_freq=3.0, is_scope_
         csv_df.to_csv(csv_file, index=False)
         print(f"フィルタ済み信号データを保存: {os.path.basename(csv_file)}")
 
+        # 規格化情報をCSVファイルに保存
+        if normalization_info:
+            norm_file = os.path.join(output_dir, f"{base_name}{scope_suffix}_normalization_info_{cutoff_freq}Hz.csv")
+            save_normalization_info_csv(normalization_info, norm_file)
+            print(f"規格化情報を保存: {os.path.basename(norm_file)}")
+
     except Exception as e:
         print(f"フィルタ済み信号グラフ作成エラー: {e}")
 
 
-def plot_window_correlations(df, session_id, output_dir, cutoff_freq=3.0, is_scope_data=False, experiment_settings=None, condition='red'):
+def plot_window_correlations(df, session_id, output_dir, cutoff_freq=3.0, is_scope_data=False, experiment_settings=None, condition='red', normalization_info=None):
     """
     窓位相相関のグラフを作成・保存
 
@@ -351,6 +453,7 @@ def plot_window_correlations(df, session_id, output_dir, cutoff_freq=3.0, is_sco
         is_scope_data (bool): オシロスコープデータかどうか
         experiment_settings (dict): 実験設定
         condition (str): 実験条件
+        normalization_info (dict): 規格化情報
     """
     try:
         if df is None or df.empty:
@@ -393,10 +496,10 @@ def plot_window_correlations(df, session_id, output_dir, cutoff_freq=3.0, is_sco
 
         # 窓位相相関をプロット
         window_corr_cols = [
-            ('phase_correlation_angle_audio', '聴覚刺激位相相関', 'darkblue'),
-            ('phase_correlation_angle_gvs', '平衡感覚刺激相関', 'blue'),
-            ('phase_correlation_angle_red_dot', '視覚刺激（橙ドット）位相相関', 'red'),
-            ('phase_correlation_angle_green_dot', '視覚刺激（緑ドット）位相相関', 'green')
+            ('phase_correlation_angle_audio', '聴覚刺激録音時の身体動揺位相相関', 'darkblue'),
+            ('phase_correlation_angle_gvs', 'GVS刺激位相相関', 'blue'),
+            ('phase_correlation_angle_red_dot', '対赤色フロー位相相関', 'red'),
+            ('phase_correlation_angle_green_dot', '対緑色フロー位相相関', 'green')
         ]
 
         for corr_col, label, color in window_corr_cols:
@@ -404,13 +507,13 @@ def plot_window_correlations(df, session_id, output_dir, cutoff_freq=3.0, is_sco
                 ax.plot(df['psychopy_time'], df[corr_col], label=label, color=color, alpha=0.7)
 
         # ax.set_title(title, fontsize=14)
-        ax.set_ylabel('位相相関係数')
-        ax.set_xlabel('時間 (秒)')
+        ax.set_ylabel('位相相関係数 [-1, 1]')
+        ax.set_xlabel('時間 [s]')
         ax.set_ylim(-1.2, 1.2)
         ax.axhline(y=0, color='black', linestyle='-', alpha=0.5)
         ax.axhline(y=0.5, color='gray', linestyle='--', alpha=0.3)
         ax.axhline(y=-0.5, color='gray', linestyle='--', alpha=0.3)
-        ax.legend()
+        ax.legend(loc='lower right')
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -434,6 +537,12 @@ def plot_window_correlations(df, session_id, output_dir, cutoff_freq=3.0, is_sco
         csv_file = os.path.join(output_dir, f"{base_name}{scope_suffix}_window_correlations_{cutoff_freq}Hz.csv")
         csv_df.to_csv(csv_file, index=False)
         print(f"窓位相相関データを保存: {os.path.basename(csv_file)}")
+
+        # 規格化情報をCSVファイルに保存
+        if normalization_info:
+            norm_file = os.path.join(output_dir, f"{base_name}{scope_suffix}_window_correlations_normalization_info_{cutoff_freq}Hz.csv")
+            save_normalization_info_csv(normalization_info, norm_file)
+            print(f"規格化情報を保存: {os.path.basename(norm_file)}")
 
     except Exception as e:
         print(f"窓位相相関グラフ作成エラー: {e}")
@@ -492,14 +601,14 @@ def process_integrated_analysis_file(filepath, cutoff_freq=3.0):
         print(f"実験設定取得エラー: {e}")
 
     # データを読み込み・処理
-    filtered_df = load_and_process_data(filepath, cutoff_freq)
+    filtered_df, normalization_info = load_and_process_data(filepath, cutoff_freq)
 
     if filtered_df is not None:
         # フィルタ済み信号の図とCSVを作成
-        plot_filtered_signals(filtered_df, session_id, phase_dir, cutoff_freq, is_scope_data, experiment_settings, condition)
+        plot_filtered_signals(filtered_df, session_id, phase_dir, cutoff_freq, is_scope_data, experiment_settings, condition, normalization_info)
 
         # 窓位相相関の図とCSVを作成
-        plot_window_correlations(filtered_df, session_id, correlation_dir, cutoff_freq, is_scope_data, experiment_settings, condition)
+        plot_window_correlations(filtered_df, session_id, correlation_dir, cutoff_freq, is_scope_data, experiment_settings, condition, normalization_info)
 
         print(f"処理完了: {session_id}")
         return True

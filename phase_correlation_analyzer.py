@@ -70,14 +70,14 @@ ENABLE_AUDIO_FILTER = False
 
 def normalize_signal(data, target_range=(-1, 1)):
     """
-    信号を標準化（z-score標準化）してから指定した範囲にスケーリング
+    信号を平均振幅が1となるように規格化
 
     Args:
         data (array): 入力データ
-        target_range (tuple): スケーリング後の範囲 (min, max) - デフォルト(-1, 1)
+        target_range (tuple): 規格化後の範囲 (min, max) - デフォルト(-1, 1)
 
     Returns:
-        array: 標準化・スケーリングされたデータ
+        array: 平均振幅規格化されたデータ
     """
     try:
         # NaNを除外して統計量を計算
@@ -85,30 +85,33 @@ def normalize_signal(data, target_range=(-1, 1)):
         if len(clean_data) == 0:
             return data.copy()
 
-        # 平均と標準偏差を計算
+        # 平均を計算
         data_mean = np.mean(clean_data)
-        data_std = np.std(clean_data)
 
-        # 標準偏差がゼロの場合（一定値）は平均を引いたゼロ配列を返す
-        if data_std == 0:
+        # 平均を引いて中心化
+        centered_data = data - data_mean
+
+        # 振幅（絶対値）の平均を計算
+        mean_amplitude = np.mean(np.abs(centered_data[~np.isnan(centered_data)]))
+
+        # 平均振幅がゼロの場合（一定値）はゼロ配列を返す
+        if mean_amplitude == 0:
             return np.zeros_like(data)
 
-        # z-score標準化（平均0、標準偏差1）
-        standardized = (data - data_mean) / data_std
+        # 平均振幅が1になるように規格化
+        amplitude_normalized = centered_data / mean_amplitude
 
-        # 指定した範囲にスケーリング（±3σを目標範囲にマッピング）
-        # 99.7%のデータが±3σ内に含まれる
-        sigma_range = 3.0
+        # 指定した範囲にスケーリング
         target_min, target_max = target_range
-        
-        # ±3σを目標範囲にマッピング
-        scaled = np.clip(standardized / sigma_range, -1, 1)  # -1~1にクリップ
-        scaled = scaled * (target_max - target_min) / 2 + (target_max + target_min) / 2
+        target_amplitude = (target_max - target_min) / 2
 
-        return scaled
+        # 目標振幅にスケーリングして中央値をオフセット
+        scaled = amplitude_normalized * target_amplitude + (target_max + target_min) / 2
+
+        return scaled, mean_amplitude
 
     except Exception as e:
-        print(f"標準化エラー: {e}")
+        print(f"平均振幅規格化エラー: {e}")
         return data.copy()
 
 
@@ -432,33 +435,33 @@ def load_and_filter_integrated_data(filepath, cutoff_freq=3.0):
         # フィルタ処理結果を格納するデータフレーム
         filtered_df = df.copy()
 
-        print(f"  - {cutoff_freq}Hzローパスフィルタ適用・標準化（位相解析用）:")
+        print(f"  - {cutoff_freq}Hzローパスフィルタ適用・平均振幅規格化（位相解析用）:")
 
-        # 角度データのフィルタ処理・標準化
+        # 角度データのフィルタ処理・平均振幅規格化
         if 'angle_change' in df.columns:
             filtered_data = apply_lowpass_filter(df['angle_change'].values, cutoff_freq, estimated_fs)
             filtered_df['angle_change_filtered'] = normalize_signal(filtered_data)
-            print(f"    - angle_change (標準化: 平均0, ±3σ→-1~1)")
+            print(f"    - angle_change (平均振幅規格化: 中心化後平均振幅=1)")
 
-        # 視覚刺激データのフィルタ処理・標準化
+        # 視覚刺激データのフィルタ処理・平均振幅規格化
         visual_cols = ['red_dot_mean_x', 'green_dot_mean_x', 'red_dot_x_change', 'green_dot_x_change']
         for col in visual_cols:
             if col in df.columns:
                 filtered_data = apply_lowpass_filter(df[col].values, cutoff_freq, estimated_fs)
                 filtered_df[f'{col}_filtered'] = normalize_signal(filtered_data)
-                print(f"    - {col} (標準化: 平均0, ±3σ→-1~1)")
+                print(f"    - {col} (平均振幅規格化: 中心化後平均振幅=1)")
 
-        # GVSデータのフィルタ処理・標準化
+        # GVSデータのフィルタ処理・平均振幅規格化
         if 'gvs_dac_output' in df.columns:
             filtered_data = apply_lowpass_filter(df['gvs_dac_output'].values, cutoff_freq, estimated_fs)
             filtered_df['gvs_dac_output_filtered'] = normalize_signal(filtered_data)
-            print(f"    - gvs_dac_output (標準化: 平均0, ±3σ→-1~1)")
+            print(f"    - gvs_dac_output (平均振幅規格化: 中心化後平均振幅=1)")
 
-        # 音響データのフィルタ処理・標準化
+        # 音響データのフィルタ処理・平均振幅規格化
         if 'audio_angle_change' in df.columns:
             filtered_data = apply_lowpass_filter(df['audio_angle_change'].values, cutoff_freq, estimated_fs)
             filtered_df['audio_angle_change_filtered'] = normalize_signal(filtered_data)
-            print(f"    - audio_angle_change (標準化: 平均0, ±3σ→-1~1)")
+            print(f"    - audio_angle_change (平均振幅規格化: 中心化後平均振幅=1)")
 
         print(f"  - フィルタ処理完了: {len(filtered_df)} samples, {len(filtered_df.columns)} columns")
 
@@ -833,18 +836,18 @@ def plot_phase_analysis(df, session_id, folder_path, folder_type, cutoff_freq=3.
 
     # 1. フィルタ済み信号
     if 'angle_change_filtered' in df.columns:
-        axes[0].plot(df['psychopy_time'], df['angle_change_filtered'], label='角度変化(標準化済み)', color='orange', linewidth=1.5)
+        axes[0].plot(df['psychopy_time'], df['angle_change_filtered'], label='角度変化(平均振幅規格化済み)', color='orange', linewidth=1.5)
         if 'audio_angle_change_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['audio_angle_change_filtered'], label='音響角度変化(標準化済み)', color='darkblue', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['audio_angle_change_filtered'], label='音響角度変化(平均振幅規格化済み)', color='darkblue', alpha=0.7)
         if 'gvs_dac_output_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['gvs_dac_output_filtered'], label='GVS出力(標準化済み)', color='blue', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['gvs_dac_output_filtered'], label='GVS出力(平均振幅規格化済み)', color='blue', alpha=0.7)
         if 'red_dot_x_change_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['red_dot_x_change_filtered'], label='赤ドット変化(標準化済み)', color='red', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['red_dot_x_change_filtered'], label='赤ドット変化(平均振幅規格化済み)', color='red', alpha=0.7)
         if 'green_dot_x_change_filtered' in df.columns:
-            axes[0].plot(df['psychopy_time'], df['green_dot_x_change_filtered'], label='緑ドット変化(標準化済み)', color='green', alpha=0.7)
+            axes[0].plot(df['psychopy_time'], df['green_dot_x_change_filtered'], label='緑ドット変化(平均振幅規格化済み)', color='green', alpha=0.7)
 
-    axes[0].set_title(f'フィルタ済み信号 ({cutoff_freq}Hz LPF, 標準化済み)')
-    axes[0].set_ylabel('標準化振幅 (±3σ→-1~1)')
+    axes[0].set_title(f'フィルタ済み信号 ({cutoff_freq}Hz LPF, 平均振幅規格化済み)')
+    axes[0].set_ylabel('規格化振幅 (平均振幅=1)')
     axes[0].set_ylim(-1.2, 1.2)
     axes[0].axhline(y=0, color='black', linestyle='--', alpha=0.5)
     axes[0].legend()

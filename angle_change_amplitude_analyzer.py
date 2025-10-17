@@ -324,9 +324,24 @@ def create_trial_distribution_visualization_generic(trial_data, output_dir, outp
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
 
+    # 各試行の統計情報をグラフ上に表示
+    for i, (trial_key, trial_info) in enumerate(sorted_trials):
+        data = trial_info['data']
+        mean_val = np.mean(data)
+        std_val = np.std(data)
+        
+        # 統計情報のテキストを作成
+        stats_text = f"μ={mean_val:.2f}°\nσ={std_val:.2f}°"
+        
+        # グラフの上部に統計情報を表示
+        y_pos = ax.get_ylim()[1] * 0.95  # グラフの上端から5%下
+        ax.text(i+1, y_pos, stats_text, ha='center', va='top', 
+                fontsize=8, bbox=dict(boxstyle="round,pad=0.3", 
+                facecolor='white', alpha=0.8, edgecolor='gray'))
+
     ax.set_xlabel('試行 (条件_セッションID)')
     ax.set_ylabel(f'angle_change{title_suffix} [°]')
-    ax.set_title(f'試行別 angle_change{title_suffix} 分布比較')
+    ax.set_title(f'試行別 angle_change{title_suffix} 分布比較（μ=平均, σ=標準偏差）')
     ax.grid(True, alpha=0.3)
 
     # x軸ラベルを回転
@@ -343,65 +358,6 @@ def create_trial_distribution_visualization_generic(trial_data, output_dir, outp
     output_file = os.path.join(output_dir, output_filename)
     fig.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"試行別{title_suffix}分布グラフを保存: {output_file}")
-    plt.close(fig)
-    """
-    条件別統合angle_change絶対値分布の可視化
-
-    Args:
-        condition_data (dict): 条件別の統合angle_change絶対値データ
-        output_dir (str): 出力ディレクトリ
-    """
-    if not condition_data:
-        print("警告: 条件別絶対値分布を作成するデータがありません")
-        return
-
-    plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
-    plt.rcParams["font.size"] = 12
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-
-    # 条件をソート
-    sorted_conditions = sorted(condition_data.keys())
-
-    # データを準備
-    plot_data = []
-    labels = []
-
-    for condition in sorted_conditions:
-        data = condition_data[condition]
-        plot_data.append(data)
-        labels.append(f"{condition}\n(n={len(data)})")
-
-    # 箱ひげ図を作成
-    bp = ax.boxplot(plot_data, labels=labels, patch_artist=True)
-
-    # 色を設定
-    colors = plt.cm.Set2(np.linspace(0, 1, len(sorted_conditions)))
-    for patch, color in zip(bp['boxes'], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-
-    ax.set_xlabel('条件 (サンプル数)')
-    ax.set_ylabel('angle_change絶対値 [°]')
-    ax.set_title('条件別 angle_change絶対値 統合分布比較')
-    ax.grid(True, alpha=0.3)
-
-    # 統計情報を表示
-    print(f"\n{'='*60}")
-    print("条件別統合絶対値分布統計")
-    print(f"{'='*60}")
-
-    for condition in sorted_conditions:
-        data = np.array(condition_data[condition])
-        print(f"{condition:>10}: 平均={np.mean(data):6.3f}°, 標準偏差={np.std(data):6.3f}°, "
-              f"中央値={np.median(data):6.3f}°, サンプル数={len(data):>6}")
-
-    plt.tight_layout()
-
-    # グラフを保存
-    output_file = os.path.join(output_dir, 'angle_change_abs_condition_distributions.png')
-    fig.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"条件別統合絶対値分布グラフを保存: {output_file}")
     plt.close(fig)
 
 
@@ -429,76 +385,6 @@ def load_angle_change_abs_data(results):
         tuple: (試行別データ, 条件別データ)
     """
     return load_angle_change_data_generic(results, use_absolute=True)
-
-
-def create_trial_distribution_visualization_generic(trial_data, output_dir, output_filename, title_suffix=""):
-    """
-    試行別angle_change分布の可視化（汎用版）
-
-    Args:
-        trial_data (dict): 試行別のangle_changeデータ
-        output_dir (str): 出力ディレクトリ
-        output_filename (str): 出力ファイル名
-        title_suffix (str): タイトルに追加する文字列
-    """
-    if not trial_data:
-        print(f"警告: 試行別{title_suffix}分布を作成するデータがありません")
-        return
-
-    plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
-    plt.rcParams["font.size"] = 10
-
-    # 条件別に色を設定
-    conditions = list(set([data['condition'] for data in trial_data.values()]))
-    colors = plt.cm.Set3(np.linspace(0, 1, len(conditions)))
-    condition_colors = dict(zip(conditions, colors))
-
-    # 図のサイズを調整（試行数に応じて）
-    n_trials = len(trial_data)
-    fig_width = max(12, n_trials * 0.8)
-    fig, ax = plt.subplots(figsize=(fig_width, 8))
-
-    # データを準備
-    plot_data = []
-    labels = []
-    colors_list = []
-
-    # 条件でソートしてから表示
-    sorted_trials = sorted(trial_data.items(), key=lambda x: (x[1]['condition'], x[1]['session_id']))
-
-    for trial_key, trial_info in sorted_trials:
-        plot_data.append(trial_info['data'])
-        labels.append(f"{trial_info['condition']}\n{trial_info['session_id']}")
-        colors_list.append(condition_colors[trial_info['condition']])
-
-    # 箱ひげ図を作成
-    bp = ax.boxplot(plot_data, labels=labels, patch_artist=True)
-
-    # 色を設定
-    for patch, color in zip(bp['boxes'], colors_list):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-
-    ax.set_xlabel('試行 (条件_セッションID)')
-    ax.set_ylabel(f'angle_change{title_suffix} [°]')
-    ax.set_title(f'試行別 angle_change{title_suffix} 分布比較')
-    ax.grid(True, alpha=0.3)
-
-    # x軸ラベルを回転
-    plt.xticks(rotation=45, ha='right')
-
-    # 凡例を追加
-    legend_elements = [plt.Rectangle((0,0),1,1, facecolor=condition_colors[cond], alpha=0.7, label=cond)
-                      for cond in conditions]
-    ax.legend(handles=legend_elements, title='条件', loc='upper right')
-
-    plt.tight_layout()
-
-    # グラフを保存
-    output_file = os.path.join(output_dir, output_filename)
-    fig.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"試行別{title_suffix}分布グラフを保存: {output_file}")
-    plt.close(fig)
 
 
 def create_summary_statistics(results):
@@ -625,9 +511,25 @@ def create_condition_distribution_visualization_generic(condition_data, output_d
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
 
+    # 各条件の統計情報をグラフ上に表示
+    for i, condition in enumerate(sorted_conditions):
+        data = np.array(condition_data[condition])
+        mean_val = np.mean(data)
+        std_val = np.std(data)
+        median_val = np.median(data)
+        
+        # 統計情報のテキストを作成
+        stats_text = f"μ={mean_val:.2f}°\nσ={std_val:.2f}°\nM={median_val:.2f}°"
+        
+        # グラフの上部に統計情報を表示
+        y_pos = ax.get_ylim()[1] * 0.95  # グラフの上端から5%下
+        ax.text(i+1, y_pos, stats_text, ha='center', va='top', 
+                fontsize=10, bbox=dict(boxstyle="round,pad=0.3", 
+                facecolor='white', alpha=0.8, edgecolor='gray'))
+
     ax.set_xlabel('条件 (サンプル数)')
     ax.set_ylabel(f'angle_change{title_suffix} [°]')
-    ax.set_title(f'条件別 angle_change{title_suffix} 統合分布比較')
+    ax.set_title(f'条件別 angle_change{title_suffix} 統合分布比較（μ=平均, σ=標準偏差, M=中央値）')
     ax.grid(True, alpha=0.3)
 
     # 統計情報を表示
@@ -733,10 +635,33 @@ def create_visualization(summary, trial_data, condition_data, trial_abs_data, co
         condition_values.append(values)
         condition_labels.append(condition)
 
-    ax2.boxplot(condition_values, labels=condition_labels)
+    bp2 = ax2.boxplot(condition_values, labels=condition_labels, patch_artist=True)
+    
+    # 箱ひげ図に色を設定
+    colors = plt.cm.Set1(np.linspace(0, 1, len(conditions)))
+    for patch, color in zip(bp2['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    # 各条件の統計情報をグラフ上に表示
+    for i, condition in enumerate(conditions):
+        values = summary[summary['condition'] == condition]['mean_amplitude_mean'].values
+        if len(values) > 0:
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+            
+            # 統計情報のテキストを作成
+            stats_text = f"μ={mean_val:.2f}°\nσ={std_val:.2f}°"
+            
+            # グラフの上部に統計情報を表示
+            y_pos = ax2.get_ylim()[1] * 0.95  # グラフの上端から5%下
+            ax2.text(i+1, y_pos, stats_text, ha='center', va='top', 
+                    fontsize=9, bbox=dict(boxstyle="round,pad=0.3", 
+                    facecolor='white', alpha=0.8, edgecolor='gray'))
+
     ax2.set_xlabel('条件')
     ax2.set_ylabel('angle_change平均振幅 [°]')
-    ax2.set_title('条件別 angle_change平均振幅分布')
+    ax2.set_title('条件別 angle_change平均振幅分布（μ=平均, σ=標準偏差）')
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()

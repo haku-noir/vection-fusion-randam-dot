@@ -613,10 +613,6 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
             # メインの角度変化として正規化されたロールを使用
             merged_df['angle_change'] = merged_df['roll']
 
-            print(f"    正規化ロール平均: {merged_df['roll'].mean():.3f}°")
-            print(f"    正規化ピッチ平均: {merged_df['pitch'].mean():.3f}°")
-            print(f"    正規化ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
-
         else:
             print("    警告: 重力ベクトルの大きさが0に近いため、従来の計算を使用")
 
@@ -644,6 +640,19 @@ def merge_experiment_data(dataframes, folder_type, experiment_settings=None, con
             merged_df['roll_change'] = normalize_angle(roll_diff)
             merged_df['pitch_change'] = normalize_angle(pitch_diff)
             merged_df['angle_change'] = merged_df['roll_change']
+
+        print(f"    正規化ロール平均: {abs(merged_df['roll']).mean():.3f}°")
+        print(f"    正規化ピッチ平均: {abs(merged_df['pitch']).mean():.3f}°")
+        print(f"    正規化ロール範囲: {merged_df['roll'].min():.3f}° ~ {merged_df['roll'].max():.3f}°")
+        print(f"    正規化ピッチ範囲: {merged_df['pitch'].min():.3f}° ~ {merged_df['pitch'].max():.3f}°")
+        # print(f"    正規化初期ロール: [{initial_roll[0]:.3f}, {initial_roll[1]:.3f}, {initial_roll[2]:.3f}]")
+        # print(f"    正規化初期ピッチ: [{initial_pitch[0]:.3f}, {new_x[1]:.3f}, {new_x[2]:.3f}]")
+        print(f"    正規化初期ロール: {initial_roll:.3f}°")
+        print(f"    正規化初期ピッチ: {initial_pitch:.3f}°")
+        print(f"    正規化ロール変化平均: {abs(merged_df['roll_change']).mean():.3f}°")
+        print(f"    正規化ピッチ変化平均: {abs(merged_df['pitch_change']).mean():.3f}°")
+        print(f"    正規化ロール変化範囲: {merged_df['roll_change'].min():.3f}° ~ {merged_df['roll_change'].max():.3f}°")
+        print(f"    正規化ピッチ変化範囲: {merged_df['pitch_change'].min():.3f}° ~ {merged_df['pitch_change'].max():.3f}°")
 
     # single_color_dotモードの処理
     # audiovisual_experimentに合わせたロジック:

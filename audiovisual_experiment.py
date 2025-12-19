@@ -14,7 +14,7 @@ audiovisual_experiment.py
 
 FORCE_COND = 'red'
 FORCE_COND = 'green'
-FORCE_COND = None
+#FORCE_COND = None
 
 # ★★★ 実験条件制御設定 ★★★
 # 各条件をcond_typeに対して反対にするかどうかの設定
@@ -84,8 +84,8 @@ GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポー�
 GVS_BAUDRATE = 115200        # GVSのボーレート
 
 # 光同期用Arduino設定
-USE_LIGHT_SYNC = True        # 光同期機能を使用するかどうか
-LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-6"  # 光同期用Arduinoのシリアルポート
+USE_LIGHT_SYNC = False        # 光同期機能を使用するかどうか
+LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-7"  # 光同期用Arduinoのシリアルポート
 LIGHT_SYNC_BAUDRATE = 9600   # 光同期用Arduinoのボーレート
 
 # 同期用表示領域設定
@@ -124,12 +124,39 @@ SCROLLING_MODE = True
 VIRTUAL_HEIGHT_MULTIPLIER = 2.0 # スクロールモード時の仮想空間の高さ（画面の何倍か）
 
 # 画面・ドット
+#WIN_SIZE      = (3840, 2160)  # ウィンドウ解像度
 WIN_SIZE      = (1920, 1080)  # ウィンドウ解像度
 N_DOTS        = 3000          # 赤・緑それぞれのドット数
+#DOT_SIZE      = 23            # ドット直径 [pix]
 DOT_SIZE      = 15            # ドット直径 [pix]
 FALL_SPEED    = 350           # 落下・スクロール速度 [pix/s]
 OSC_FREQ      = 0.1         # 横揺れ周波数 [Hz]
-OSC_AMP       = 500           # ドットの横揺れ振幅 [pix]
+OSC_AMP       = 300           # ドットの横揺れ振幅 [pix] （デフォルト値、時間変化がない場合に使用）
+
+TRIAL_DURATION   = 180.0      # 各試行の刺激掲示時間 [s]
+
+# 時間経過による振幅変化設定
+USE_TIME_VARYING_AMPLITUDE = False  # 時間による振幅変化を使用するかどうか
+
+# 経過時間（秒）と対応する振幅（pix）の配列
+# 時間は0から始まり、実験終了時間まで定義する
+# 配列の最後の時間を超えた場合は最後の振幅値を維持
+TIME_AMPLITUDE_PAIRS = [
+    (0.0,   500),
+    (100.0, 400),
+    (150.0, 300),
+    (200.0, 200),
+    (250.0, 150),
+    (300.0, 100),
+    (350.0, 50)
+]
+#TIME_AMPLITUDE_PAIRS = [
+#    (0.0, 300),
+#    (100.0, 200),
+#    (150.0, 150),
+#    (200.0, 100),
+#    (250.0, 50)
+#]
 
 # 音
 # 2D座標系での音響パラメータ
@@ -157,7 +184,6 @@ SAMPLE_RATE   = 44100        # サンプリングレート [Hz]
 MAX_ITD_S     = 0.0007       # ITDの最大値 (秒)。'itd'または'both'モードで使用
 
 # 試行
-TRIAL_DURATION   = 179.0      # 各試行の刺激掲示時間 [s]
 ITI              = 1.0       # 刺激間インターバル [s]
 MAX_TRIALS       = 1         # 最大試行回数（デフォルト1回）
 
@@ -637,6 +663,40 @@ class LightSyncController:
 # 3. ウィンドウと刺激の準備
 # ------------------------------------------------------------------
 
+def get_amplitude_at_time(elapsed_time):
+    """
+    経過時間に基づいて振幅を計算する関数
+
+    Args:
+        elapsed_time (float): 実験開始からの経過時間（秒）
+
+    Returns:
+        float: その時点での振幅値（pix）
+    """
+    if not USE_TIME_VARYING_AMPLITUDE or len(TIME_AMPLITUDE_PAIRS) == 0:
+        return OSC_AMP  # デフォルト値を返す
+
+    # 時間が0より小さい場合は最初の振幅を返す
+    if elapsed_time <= TIME_AMPLITUDE_PAIRS[0][0]:
+        return TIME_AMPLITUDE_PAIRS[0][1]
+
+    # 最後の時間を超えた場合は最後の振幅を返す
+    if elapsed_time >= TIME_AMPLITUDE_PAIRS[-1][0]:
+        return TIME_AMPLITUDE_PAIRS[-1][1]
+
+    # 線形補間で振幅を計算
+    for i in range(len(TIME_AMPLITUDE_PAIRS) - 1):
+        time1, amp1 = TIME_AMPLITUDE_PAIRS[i]
+        time2, amp2 = TIME_AMPLITUDE_PAIRS[i + 1]
+
+        if time1 <= elapsed_time <= time2:
+            # 線形補間
+            ratio = (elapsed_time - time1) / (time2 - time1)
+            return amp1 + (amp2 - amp1) * ratio
+
+    # ここに到達することはないはずだが、安全のため
+    return OSC_AMP
+
 def create_beep_sound(freq, duration, volume=0.5, sample_rate=44100):
     """ビープ音を生成（test_random_dotsと同じ方式）"""
     t = np.linspace(0, duration, int(sample_rate * duration), False)
@@ -715,7 +775,13 @@ Y_MAX = WIN_H / 2
 Y_MIN = -WIN_H / 2
 
 def init_positions():
-    xpos = np.random.uniform(-WIN_W/2 - OSC_AMP, WIN_W/2 + OSC_AMP, N_DOTS)
+    # 初期位置生成では、時間変化する振幅の最大値を使用して十分な範囲を確保
+    if USE_TIME_VARYING_AMPLITUDE and len(TIME_AMPLITUDE_PAIRS) > 0:
+        max_amplitude = max(amp for _, amp in TIME_AMPLITUDE_PAIRS)
+    else:
+        max_amplitude = OSC_AMP
+
+    xpos = np.random.uniform(-WIN_W/2 - max_amplitude, WIN_W/2 + max_amplitude, N_DOTS)
     if SCROLLING_MODE:
         # スクロールモードでは、より広い仮想空間にドットを配置
         virtual_h = WIN_H * VIRTUAL_HEIGHT_MULTIPLIER
@@ -865,7 +931,7 @@ def create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_position
         # 最も近い時刻のドット位置を見つける
         if timestamps:
             # timestampsは試行開始からの時間なので、accel_time_sと比較
-            closest_idx = min(range(len(timestamps)), 
+            closest_idx = min(range(len(timestamps)),
                             key=lambda j: abs(timestamps[j] - accel_time_s))
 
             red_pos = red_dot_positions[closest_idx] if closest_idx < len(red_dot_positions) else [0, 0]
@@ -886,7 +952,7 @@ def create_accel_dot_dataframe(accel_data, red_dot_positions, green_dot_position
 
     return pd.DataFrame(df_data, columns=[
         'psychopy_time', 'accel_time', 'accel_x', 'accel_y', 'accel_z',
-        'red_dot_mean_x', 'red_dot_mean_y', 
+        'red_dot_mean_x', 'red_dot_mean_y',
         'green_dot_mean_x', 'green_dot_mean_y'
     ])
 
@@ -1116,7 +1182,7 @@ def save_serial_acceleration_data(accel_data, red_dot_positions, green_dot_posit
 
             # 最も近い時刻のドット位置を見つける
             if timestamps:
-                closest_idx = min(range(len(timestamps)), 
+                closest_idx = min(range(len(timestamps)),
                                 key=lambda i: abs(timestamps[i] - timestamp_s))
                 red_pos = red_dot_positions[closest_idx] if closest_idx < len(red_dot_positions) else [0, 0]
                 green_pos = green_dot_positions[closest_idx] if closest_idx < len(green_dot_positions) else [0, 0]
@@ -1396,7 +1462,7 @@ try:
 
         # ----- GVS刺激開始 -----
         if USE_GVS and gvs_controller:
-            # GVS_REVERSEに応じて刺激タイプを決定
+            # G3VS_REVERSEに応じて刺激タイプを決定
             if GVS_REVERSE:
                 gvs_condition = 'green' if cond_type == 'red' else 'red'
                 print(f"Trial {trial_idx}: GVS刺激開始 ({cond_type} → {gvs_condition}に反転)")
@@ -1446,7 +1512,9 @@ try:
                 temp_green_xys[:, 1] = ((temp_green_xys[:, 1] + virtual_h/2) % virtual_h) - virtual_h/2
 
                 phase = 2 * np.pi * OSC_FREQ * now
-                x_osc_offset = OSC_AMP * np.sin(phase)
+                # 経過時間に応じた振幅を取得
+                current_amplitude = get_amplitude_at_time(now)
+                x_osc_offset = current_amplitude * np.sin(phase)
                 temp_red_xys[:, 0] = red_base_x + x_osc_offset
                 temp_green_xys[:, 0] = green_base_x - x_osc_offset
 
@@ -1463,7 +1531,9 @@ try:
                 green_current_pos[is_below_screen_green, 1] += WIN_H
 
                 phase = 2 * np.pi * OSC_FREQ * now
-                x_osc_offset = OSC_AMP * np.sin(phase)
+                # 経過時間に応じた振幅を取得
+                current_amplitude = get_amplitude_at_time(now)
+                x_osc_offset = current_amplitude * np.sin(phase)
                 red_current_pos[:, 0] = red_base_x + x_osc_offset
                 green_current_pos[:, 0] = green_base_x - x_osc_offset
 
@@ -1509,7 +1579,7 @@ try:
             if USE_CENTER_LINES:
                 # 中心線の位置をオシレーションに合わせて更新
                 phase = 2 * np.pi * OSC_FREQ * now
-                x_osc_offset = OSC_AMP * np.sin(phase)
+                x_osc_offset = current_amplitude * np.sin(phase)
                 red_center_x = x_osc_offset
                 green_center_x = -x_osc_offset
 
@@ -1564,7 +1634,8 @@ try:
                     'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse',  # 新しい制御変数
                     'audio_source_mode', 'audio_sync_type', 'audio_file_used',
                     'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
-                    'dot_osc_freq', 'dot_osc_amp', 'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
+                    'dot_osc_freq', 'dot_osc_amp', 'use_time_varying_amplitude', 'time_amplitude_pairs',
+                    'audio_freqs', 'sound_initial_x', 'sound_initial_y', 'sound_osc_amplitude',
                     'left_ear_pos', 'right_ear_pos', 'distance_attenuation', 'min_distance_gain',
                     'sample_rate', 'max_itd_s'
                 ]
@@ -1577,13 +1648,17 @@ try:
 
         # メインログに記録（ESCキーが押された場合でも記録）
         audio_freqs_str = " | ".join([",".join(map(str, s.freqs)) for s in SOUND_SOURCES])
+        # 時間変化振幅の設定をログ用文字列に変換
+        time_amp_pairs_str = "|".join([f"{t}:{a}" for t, a in TIME_AMPLITUDE_PAIRS]) if USE_TIME_VARYING_AMPLITUDE else ""
+
         log_data = [
             trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
             stimulus_start_time_str, stimulus_start_timestamp,  # 刺激開始時間を追加
             SINGLE_COLOR_DOT, VISUAL_REVERSE, AUDIO_REVERSE, GVS_REVERSE,  # 新しい制御変数を追加
             AUDIO_SOURCE_MODE, audio_sync_type, audio_file_used,
             WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
-            OSC_AMP, audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,
+            OSC_AMP, USE_TIME_VARYING_AMPLITUDE, time_amp_pairs_str,
+            audio_freqs_str, SOUND_INITIAL_X, SOUND_INITIAL_Y, SOUND_OSC_AMPLITUDE,
             f"({LEFT_EAR_X},{LEFT_EAR_Y})", f"({RIGHT_EAR_X},{RIGHT_EAR_Y})",
             DISTANCE_ATTENUATION, MIN_DISTANCE_GAIN, SAMPLE_RATE, MAX_ITD_S
         ]
@@ -1615,7 +1690,7 @@ try:
 
             # グラフを生成
             save_acceleration_graph_from_data(
-                accel_data, red_dot_positions, green_dot_positions, 
+                accel_data, red_dot_positions, green_dot_positions,
                 timestamps, trial_idx, LOG_DIR, file_timestamp
             )
 

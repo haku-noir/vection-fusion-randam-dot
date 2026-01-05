@@ -14,11 +14,15 @@ audiovisual_experiment.py
 
 FORCE_COND = 'red'
 FORCE_COND = 'green'
-#FORCE_COND = None
+FORCE_COND = None
 
 # ★★★ 実験条件制御設定 ★★★
 # 各条件をcond_typeに対して反対にするかどうかの設定
 # 注意: これらの設定は個別にON/OFFできます（互いに独立）
+VISUAL_STIMULUS_ON = True    # 視覚刺激のON/OFF（False時はランダムドットを非表示、背景のみ表示）
+AUDIO_STIMULUS_ON = False     # 聴覚刺激のON/OFF（False時は無音）
+GVS_STIMULUS_ON = False       # GVS刺激のON/OFF（False時はGVS刺激を出力しない）
+
 SINGLE_COLOR_DOT = False     # ランダムドット1色のみ表示（デフォルトはcond_typeの反対色のみ）
                             # True: cond_type='red'なら緑ドットのみ、'green'なら赤ドットのみ（デフォルト）
 VISUAL_REVERSE = False       # 視覚刺激の逆転（SINGLE_COLOR_DOTでcond_typeの色のみ表示）
@@ -79,13 +83,12 @@ SERIAL_BAUDRATE = 115200 # M5Stackのボーレート
 COMMUNICATION_MODE = 'SERIAL'  # 'WIFI' または 'SERIAL'
 
 # GVS（前庭電気刺激）設定
-USE_GVS = True               # GVS刺激を使用するかどうか
 GVS_SERIAL_PORT = "/dev/cu.usbserial-0001"  # GVS用ESP32のシリアルポート
 GVS_BAUDRATE = 115200        # GVSのボーレート
 
 # 光同期用Arduino設定
 USE_LIGHT_SYNC = False        # 光同期機能を使用するかどうか
-LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-7"  # 光同期用Arduinoのシリアルポート
+LIGHT_SYNC_SERIAL_PORT = "/dev/cu.usbserial-6"  # 光同期用Arduinoのシリアルポート
 LIGHT_SYNC_BAUDRATE = 9600   # 光同期用Arduinoのボーレート
 
 # 同期用表示領域設定
@@ -597,6 +600,10 @@ class GVSController:
         else:
             print(f"Invalid GVS amplitude: {amplitude} (must be 0-255)")
             return False
+
+    def force_high(self):
+        """強制的にHIGHに設定"""
+        return self.send_command('s')
 
 
 # 光同期用Arduino制御クラス
@@ -1254,7 +1261,7 @@ else:
 
 # GVSコントローラーの初期化
 gvs_controller = None
-if USE_GVS:
+if GVS_STIMULUS_ON:
     print("GVS制御を初期化中...")
     gvs_controller = GVSController(GVS_SERIAL_PORT, GVS_BAUDRATE)
     if gvs_controller.connect():
@@ -1265,7 +1272,7 @@ if USE_GVS:
         print("GVS制御の初期化に失敗しました。GVS刺激なしで続行します。")
         gvs_controller = None
 else:
-    print("GVS刺激は無効です")
+    print("GVS刺激がOFFに設定されています")
 
 # 光同期コントローラーの初期化
 light_sync_controller = None
@@ -1391,6 +1398,7 @@ try:
             # 黒い画面が描画された後にArduinoに刺激検出準備コマンド送信
             print(f"Trial {trial_idx}: 光同期準備 - 刺激検出準備状態にセット")
             light_sync_controller.ready()
+            light_sync_controller.force_high()
 
         # ----- ビープ音再生（試行開始） -----
         if USE_BEEP and beep_sound:
@@ -1429,27 +1437,29 @@ try:
         green_dots.xys = green_current_pos
 
         # 初期位置でドットを描画（制御変数に基づく）
-        if SINGLE_COLOR_DOT:
-            if VISUAL_REVERSE:
-                # VISUAL_REVERSE=True: cond_typeの色のみ表示
-                if cond_type == 'red':
+        if VISUAL_STIMULUS_ON:
+            if SINGLE_COLOR_DOT:
+                if VISUAL_REVERSE:
+                    # VISUAL_REVERSE=True: cond_typeの色のみ表示
+                    if cond_type == 'red':
+                        red_dots.draw()
+                    else:
+                        green_dots.draw()
+                else:
+                    # VISUAL_REVERSE=False: cond_typeの反対色のみ表示（デフォルト）
+                    if cond_type == 'red':
+                        green_dots.draw()
+                    else:
+                        red_dots.draw()
+            else:
+                # 通常の描画
+                if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
                     red_dots.draw()
+                    green_dots.draw()
                 else:
                     green_dots.draw()
-            else:
-                # VISUAL_REVERSE=False: cond_typeの反対色のみ表示（デフォルト）
-                if cond_type == 'red':
-                    green_dots.draw()
-                else:
                     red_dots.draw()
-        else:
-            # 通常の描画
-            if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
-                red_dots.draw()
-                green_dots.draw()
-            else:
-                green_dots.draw()
-                red_dots.draw()
+        # VISUAL_STIMULUS_ON=Falseの場合は背景のみ表示（ドットを描画しない）
 
         # 光同期用正方形も描画
         if USE_LIGHT_SYNC:
@@ -1461,8 +1471,8 @@ try:
         time.sleep(0.2)  # プロジェクターの投影にかかる時間だけ待機
 
         # ----- GVS刺激開始 -----
-        if USE_GVS and gvs_controller:
-            # G3VS_REVERSEに応じて刺激タイプを決定
+        if GVS_STIMULUS_ON and gvs_controller:
+            # GVS_REVERSEに応じて刺激タイプを決定
             if GVS_REVERSE:
                 gvs_condition = 'green' if cond_type == 'red' else 'red'
                 print(f"Trial {trial_idx}: GVS刺激開始 ({cond_type} → {gvs_condition}に反転)")
@@ -1471,9 +1481,21 @@ try:
                 print(f"Trial {trial_idx}: GVS刺激開始 ({gvs_condition})")
             gvs_controller.start_stimulation(gvs_condition)  # 赤なら同相、緑なら逆相
             time.sleep(0.05)  # GVS開始の確認
+            # ----- 光同期またはArduinoトリガー -----
+            if not USE_LIGHT_SYNC:
+                # USE_LIGHT_SYNC=Falseの場合、Arduinoへ's'コマンドを送信して正弦波を起動
+                print(f"Trial {trial_idx}: Arduinoへ's'コマンドを送信（正弦波起動）")
+                gvs_controller.force_high()  # 's'コマンドを送信
+                time.sleep(0.05)  # コマンド送信完了を待機
+        else:
+            print(f"Trial {trial_idx}: GVS刺激OFF（刺激なし）")
 
         # ----- 音刺激開始 -----
-        stereo_snd.play()    # 音を再生開始
+        if AUDIO_STIMULUS_ON:
+            stereo_snd.play()    # 音を再生開始
+            print(f"Trial {trial_idx}: 音刺激再生開始")
+        else:
+            print(f"Trial {trial_idx}: 音刺激OFF（無音）")
         trial_clock = core.Clock()
         trial_clock.reset()  # まずクロックをリセット
 
@@ -1549,29 +1571,31 @@ try:
             timestamps.append(now)
 
             # ドット描画の制御
-            if SINGLE_COLOR_DOT:
-                if VISUAL_REVERSE:
-                    # VISUAL_REVERSE=True: cond_typeの色のみ表示
-                    if cond_type == 'red':
-                        red_dots.draw()
+            if VISUAL_STIMULUS_ON:
+                if SINGLE_COLOR_DOT:
+                    if VISUAL_REVERSE:
+                        # VISUAL_REVERSE=True: cond_typeの色のみ表示
+                        if cond_type == 'red':
+                            red_dots.draw()
+                        else:
+                            green_dots.draw()
                     else:
-                        green_dots.draw()
+                        # VISUAL_REVERSE=False: cond_typeの反対色のみ表示（デフォルト）
+                        if cond_type == 'red':
+                            green_dots.draw()
+                        else:
+                            red_dots.draw()
                 else:
-                    # VISUAL_REVERSE=False: cond_typeの反対色のみ表示（デフォルト）
-                    if cond_type == 'red':
+                    # 通常の描画（フレーム毎に交互に描画順を変更）
+                    if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
+                        # 赤ドットを先に描画
+                        red_dots.draw()
                         green_dots.draw()
                     else:
+                        # 緑ドットを先に描画
+                        green_dots.draw()
                         red_dots.draw()
-            else:
-                # 通常の描画（フレーム毎に交互に描画順を変更）
-                if (red_first and frame_count % 2 == 0) or (not red_first and frame_count % 2 == 1):
-                    # 赤ドットを先に描画
-                    red_dots.draw()
-                    green_dots.draw()
-                else:
-                    # 緑ドットを先に描画
-                    green_dots.draw()
-                    red_dots.draw()
+            # VISUAL_STIMULUS_ON=Falseの場合は背景のみ表示（ドットを描画しない）
 
             frame_count += 1
 
@@ -1604,7 +1628,7 @@ try:
             stereo_snd.stop()
 
         # ----- GVS刺激停止 -----
-        if USE_GVS and gvs_controller:
+        if GVS_STIMULUS_ON and gvs_controller:
             print(f"Trial {trial_idx}: GVS刺激停止")
             gvs_controller.stop_stimulation()
             time.sleep(0.05)  # GVS停止の確認
@@ -1631,6 +1655,7 @@ try:
                 header = [
                     'trial', 'panning_mode', 'scrolling_mode', 'condition', 'response', 'RT',
                     'stimulus_start_time', 'stimulus_start_timestamp',  # 刺激開始時間の追加
+                    'visual_stimulus_on', 'audio_stimulus_on', 'gvs_stimulus_on',  # ON/OFF制御
                     'single_color_dot', 'visual_reverse', 'audio_reverse', 'gvs_reverse',  # 新しい制御変数
                     'audio_source_mode', 'audio_sync_type', 'audio_file_used',
                     'win_width', 'win_height', 'n_dots', 'dot_size', 'fall_speed',
@@ -1654,6 +1679,7 @@ try:
         log_data = [
             trial_idx, PANNING_MODE, SCROLLING_MODE, cond_type, participant_response, f"{rt:.3f}",
             stimulus_start_time_str, stimulus_start_timestamp,  # 刺激開始時間を追加
+            VISUAL_STIMULUS_ON, AUDIO_STIMULUS_ON, GVS_STIMULUS_ON,  # ON/OFF制御を追加
             SINGLE_COLOR_DOT, VISUAL_REVERSE, AUDIO_REVERSE, GVS_REVERSE,  # 新しい制御変数を追加
             AUDIO_SOURCE_MODE, audio_sync_type, audio_file_used,
             WIN_W, WIN_H, N_DOTS, DOT_SIZE, FALL_SPEED, OSC_FREQ,
@@ -1785,7 +1811,7 @@ finally:
         print("シリアル通信を停止しました")
 
     # GVS制御を安全に停止
-    if USE_GVS and gvs_controller:
+    if GVS_STIMULUS_ON and gvs_controller:
         gvs_controller.stop_stimulation()
         gvs_controller.disconnect()
         print("GVS制御を停止しました")

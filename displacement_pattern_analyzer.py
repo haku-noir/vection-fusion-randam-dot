@@ -776,14 +776,677 @@ def create_visualization(results, summary, output_dir):
         output_dir (str): 出力ディレクトリ
     """
     if summary.empty:
-        print("警告: 可視化するデータがありません")
         return
 
-    # 新しい積み上げ棒グラフを作成
+    # 新しい積み上げ棒グラフを作成（標準）
     create_stacked_bar_visualization(summary, output_dir)
+    
+    # 新しい積み上げ棒グラフを作成（Mixed条件）
+    create_stacked_bar_visualization_mixed(summary, output_dir)
+    
+    # 新しい積み上げ棒グラフを作成（Singles条件）
+    create_stacked_bar_visualization_singles(summary, output_dir)
+    
+    # 新しい積み上げ棒グラフを作成（Audio Expanded条件）
+    create_stacked_bar_visualization_audio_expanded(summary, output_dir)
+
+    # 新しい積み上げ棒グラフを作成（GVS Expanded条件）
+    create_stacked_bar_visualization_gvs_expanded(summary, output_dir)
 
     # 従来のグラフも作成（参考用）
     create_legacy_visualization(results, summary, output_dir)
+
+
+def create_stacked_bar_visualization_mixed(summary, output_dir):
+    """
+    Mixed条件（vis+aud, aud only, vis+ves, ves only）の積み上げ棒グラフを作成
+    上から: 
+    - vis+aud(red)
+    - aud only
+    - vis+aud(green)
+    - vis+ves(red)
+    - ves only
+    - vis+ves(green)
+    """
+    if summary.empty:
+        return
+
+    plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
+    plt.rcParams["font.size"] = 24
+
+    subjects = summary['subject'].unique()
+
+    for subject in subjects:
+        subject_data = summary[summary['subject'] == subject]
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        # 表示順序 (下から上へ)
+        # 1. vis+ves(green) -> 'gvs', 'green'
+        # 2. ves only -> 'only_gvs' (aggregated)
+        # 3. vis+ves(red) -> 'gvs', 'red'
+        # 4. vis+aud(green) -> 'audio', 'green'
+        # 5. aud only -> 'only_audio' (aggregated)
+        # 6. vis+aud(red) -> 'audio', 'red'
+        
+        display_order = [
+            ('gvs', 'green', 'Vis. + Ves.'),
+            ('only_gvs', None, 'Ves. only'),
+            ('gvs', 'red', 'Vis. + Ves.'),
+            ('audio', 'green', 'Vis. + Aud.'),
+            ('only_audio', None, 'Aud. only'),
+            ('audio', 'red', 'Vis. + Aud.')
+        ]
+
+        # 描画用データ
+        y_positions = []
+        y_labels = []
+        label_colors = []  # ラベルの色を保持
+
+        
+        red_dominant_data = []
+        green_dominant_data = []
+        both_low_data = []
+        
+        red_amplitude_data = []
+        green_amplitude_data = []
+        both_amplitude_data = []
+
+        for idx, (stim, color, label) in enumerate(display_order):
+            
+            y_positions.append(idx)
+            y_labels.append(label)
+            
+            # 色の決定
+            if color == 'red':
+                label_colors.append('red')
+            elif color == 'green':
+                label_colors.append('green')
+            else:
+                label_colors.append('black')
+
+            # データ取得
+            if color is None:
+                 # Aggregated types (only_audio, only_gvs)
+                data_subset = subject_data[subject_data['stimulus_type'] == stim]
+                
+                # 集約処理
+                total_samples_sum = data_subset['total_valid_samples_sum'].sum() if not data_subset.empty else 0
+                
+                if total_samples_sum > 0:
+                     # 加重平均処理
+                    total_red_samples = data_subset['red_dominant_samples_sum'].sum()
+                    total_green_samples = data_subset['green_dominant_samples_sum'].sum()
+                    total_both_samples = data_subset['both_low_samples_sum'].sum()
+                    
+                    red_pct = (total_red_samples / total_samples_sum) * 100
+                    green_pct = (total_green_samples / total_samples_sum) * 100
+                    both_pct = (total_both_samples / total_samples_sum) * 100
+                    
+                    # 振幅加重平均
+                    w_red_amp = 0
+                    w_green_amp = 0
+                    w_both_amp = 0
+                    
+                    for _, row in data_subset.iterrows():
+                        if pd.notna(row['red_dominant_mean_mean']): w_red_amp += row['red_dominant_mean_mean'] * row['red_dominant_samples_sum']
+                        if pd.notna(row['green_dominant_mean_mean']): w_green_amp += row['green_dominant_mean_mean'] * row['green_dominant_samples_sum']
+                        if pd.notna(row['both_low_mean_mean']): w_both_amp += row['both_low_mean_mean'] * row['both_low_samples_sum']
+                    
+                    red_amp = w_red_amp / total_red_samples if total_red_samples > 0 else np.nan
+                    green_amp = w_green_amp / total_green_samples if total_green_samples > 0 else np.nan
+                    both_amp = w_both_amp / total_both_samples if total_both_samples > 0 else np.nan
+                    
+                    red_dominant_data.append(red_pct)
+                    green_dominant_data.append(green_pct)
+                    both_low_data.append(both_pct)
+                    red_amplitude_data.append(red_amp)
+                    green_amplitude_data.append(green_amp)
+                    both_amplitude_data.append(both_amp)
+
+                else:
+                    # データなし
+                    red_dominant_data.append(0)
+                    green_dominant_data.append(0)
+                    both_low_data.append(0)
+                    red_amplitude_data.append(np.nan)
+                    green_amplitude_data.append(np.nan)
+                    both_amplitude_data.append(np.nan)
+
+            else:
+                # Specific color condition
+                row = subject_data[(subject_data['stimulus_type'] == stim) & (subject_data['color_condition'] == color)]
+                
+                if not row.empty:
+                    r = row.iloc[0]
+                    total_samples = r['total_valid_samples_sum']
+                    if total_samples > 0:
+                        red_dominant_data.append((r['red_dominant_samples_sum'] / total_samples) * 100)
+                        green_dominant_data.append((r['green_dominant_samples_sum'] / total_samples) * 100)
+                        both_low_data.append((r['both_low_samples_sum'] / total_samples) * 100)
+                        
+                        red_amplitude_data.append(r['red_dominant_mean_mean'])
+                        green_amplitude_data.append(r['green_dominant_mean_mean'])
+                        both_amplitude_data.append(r['both_low_mean_mean'])
+                    else:
+                         red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                         red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+                else:
+                    red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                    red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+
+        # Plotting
+        width = 0.7
+        color_red = '#ff6b6b'
+        color_green = '#51cf66'
+        color_both = '#808080'
+
+        p1 = ax.barh(y_positions, red_dominant_data, width, label='赤ドット優勢', color=color_red, alpha=0.8)
+        p2 = ax.barh(y_positions, both_low_data, width, left=red_dominant_data, label='両方低相関', color=color_both, alpha=0.8)
+        
+        green_left = [r + b for r, b in zip(red_dominant_data, both_low_data)]
+        p3 = ax.barh(y_positions, green_dominant_data, width, left=green_left, label='緑ドット優勢', color=color_green, alpha=0.8)
+
+        ax.set_title(f'被験者: {subject} - Mixed Condition Comparison', fontsize=14, fontweight='bold')
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(y_labels)
+        
+        # y軸ラベルの色を設定
+        for i, tick_label in enumerate(ax.get_yticklabels()):
+            tick_label.set_color(label_colors[i])
+            
+        ax.set_xlim(0, 100)
+        ax.set_xticklabels([0, 20, 40, 60, 80, 100], fontsize=24)
+        ax.grid(True, alpha=0.3, axis='x')
+
+        # Annotations
+        for i, y in enumerate(y_positions):
+            # Red
+            if red_dominant_data[i] > 1.0:
+                x_pos = red_dominant_data[i] / 2
+                label_text = f'{red_dominant_data[i]:.1f}[%]'
+                if not np.isnan(red_amplitude_data[i]):
+                     label_text += f'\n{red_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+            
+            # Both
+            if both_low_data[i] > 1.0:
+                x_pos = red_dominant_data[i] + both_low_data[i] / 2
+                label_text = f'{both_low_data[i]:.1f}[%]'
+                if not np.isnan(both_amplitude_data[i]):
+                     label_text += f'\n{both_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+                
+            # Green
+            if green_dominant_data[i] > 1.0:
+                x_pos = green_left[i] + green_dominant_data[i] / 2
+                label_text = f'{green_dominant_data[i]:.1f}[%]'
+                if not np.isnan(green_amplitude_data[i]):
+                     label_text += f'\n{green_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+
+        plt.tight_layout()
+        output_file = os.path.join(output_dir, f'displacement_pattern_percentage_stacked_mixed_{subject}.png')
+        fig.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"Mixed条件積み上げ棒グラフを保存: {output_file}")
+        plt.close(fig)
+
+
+def create_stacked_bar_visualization_singles(summary, output_dir):
+    """
+    Single条件（aud only, vis only, ves only）の積み上げ棒グラフを作成
+    上から:
+    - aud only
+    - vis only
+    - ves only
+    """
+    if summary.empty:
+        return
+
+    plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
+    plt.rcParams["font.size"] = 24
+
+    subjects = summary['subject'].unique()
+
+    for subject in subjects:
+        subject_data = summary[summary['subject'] == subject]
+        fig, ax = plt.subplots(figsize=(10, 6)) # 高さ調整
+
+        # 表示順序 (下から上へ)
+        # 1. ves only -> 'only_gvs'
+        # 2. vis only -> 'vis'
+        # 3. aud only -> 'only_audio'
+        
+        display_order = [
+            ('only_gvs', 'Ves. only'),
+            ('vis', 'Vis. only'),
+            ('only_audio', 'Aud. only')
+        ]
+
+        # 描画用データ
+        y_positions = []
+        y_labels = []
+        
+        red_dominant_data = []
+        green_dominant_data = []
+        both_low_data = []
+        
+        red_amplitude_data = []
+        green_amplitude_data = []
+        both_amplitude_data = []
+
+        for idx, (stim, label) in enumerate(display_order):
+            
+            y_positions.append(idx)
+            y_labels.append(label)
+
+            # Aggregated types processing
+            data_subset = subject_data[subject_data['stimulus_type'] == stim]
+            
+            # 集約処理
+            total_samples_sum = data_subset['total_valid_samples_sum'].sum() if not data_subset.empty else 0
+            
+            if total_samples_sum > 0:
+                    # 加重平均処理
+                total_red_samples = data_subset['red_dominant_samples_sum'].sum()
+                total_green_samples = data_subset['green_dominant_samples_sum'].sum()
+                total_both_samples = data_subset['both_low_samples_sum'].sum()
+                
+                red_pct = (total_red_samples / total_samples_sum) * 100
+                green_pct = (total_green_samples / total_samples_sum) * 100
+                both_pct = (total_both_samples / total_samples_sum) * 100
+                
+                # 振幅加重平均
+                w_red_amp = 0
+                w_green_amp = 0
+                w_both_amp = 0
+                
+                for _, row in data_subset.iterrows():
+                    if pd.notna(row['red_dominant_mean_mean']): w_red_amp += row['red_dominant_mean_mean'] * row['red_dominant_samples_sum']
+                    if pd.notna(row['green_dominant_mean_mean']): w_green_amp += row['green_dominant_mean_mean'] * row['green_dominant_samples_sum']
+                    if pd.notna(row['both_low_mean_mean']): w_both_amp += row['both_low_mean_mean'] * row['both_low_samples_sum']
+                
+                red_amp = w_red_amp / total_red_samples if total_red_samples > 0 else np.nan
+                green_amp = w_green_amp / total_green_samples if total_green_samples > 0 else np.nan
+                both_amp = w_both_amp / total_both_samples if total_both_samples > 0 else np.nan
+                
+                red_dominant_data.append(red_pct)
+                green_dominant_data.append(green_pct)
+                both_low_data.append(both_pct)
+                red_amplitude_data.append(red_amp)
+                green_amplitude_data.append(green_amp)
+                both_amplitude_data.append(both_amp)
+
+            else:
+                # データなし
+                red_dominant_data.append(0)
+                green_dominant_data.append(0)
+                both_low_data.append(0)
+                red_amplitude_data.append(np.nan)
+                green_amplitude_data.append(np.nan)
+                both_amplitude_data.append(np.nan)
+
+        # Plotting
+        width = 0.7
+        color_red = '#ff6b6b'
+        color_green = '#51cf66'
+        color_both = '#808080'
+
+        p1 = ax.barh(y_positions, red_dominant_data, width, label='赤ドット優勢', color=color_red, alpha=0.8)
+        p2 = ax.barh(y_positions, both_low_data, width, left=red_dominant_data, label='両方低相関', color=color_both, alpha=0.8)
+        
+        green_left = [r + b for r, b in zip(red_dominant_data, both_low_data)]
+        p3 = ax.barh(y_positions, green_dominant_data, width, left=green_left, label='緑ドット優勢', color=color_green, alpha=0.8)
+
+        ax.set_title(f'被験者: {subject} - Single Condition Comparison', fontsize=14, fontweight='bold')
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(y_labels)
+        ax.set_xlim(0, 100)
+        ax.set_xticklabels([0, 20, 40, 60, 80, 100], fontsize=24)
+        ax.grid(True, alpha=0.3, axis='x')
+
+        # Annotations
+        for i, y in enumerate(y_positions):
+            # Red
+            if red_dominant_data[i] > 1.0:
+                x_pos = red_dominant_data[i] / 2
+                label_text = f'{red_dominant_data[i]:.1f}[%]'
+                if not np.isnan(red_amplitude_data[i]):
+                     label_text += f'\n{red_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+            
+            # Both
+            if both_low_data[i] > 1.0:
+                x_pos = red_dominant_data[i] + both_low_data[i] / 2
+                label_text = f'{both_low_data[i]:.1f}[%]'
+                if not np.isnan(both_amplitude_data[i]):
+                     label_text += f'\n{both_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+                
+            # Green
+            if green_dominant_data[i] > 1.0:
+                x_pos = green_left[i] + green_dominant_data[i] / 2
+                label_text = f'{green_dominant_data[i]:.1f}[%]'
+                if not np.isnan(green_amplitude_data[i]):
+                     label_text += f'\n{green_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+
+        plt.tight_layout()
+        output_file = os.path.join(output_dir, f'displacement_pattern_percentage_singles_{subject}.png')
+        fig.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"Single条件積み上げ棒グラフを保存: {output_file}")
+        plt.close(fig)
+
+
+def create_stacked_bar_visualization_audio_expanded(summary, output_dir):
+    """
+    Audio Expanded条件の積み上げ棒グラフを作成
+    上から:
+    - Aud. only (Text color: Red) -> 'only_audio', 'red'
+    - Vis. + Aud. (Text color: Red) -> 'audio', 'red'
+    - Vis. only (Text color: Black) -> 'vis', (aggregated)
+    - Vis. + Aud. (Text color: Green) -> 'audio', 'green'
+    - Aud. only (Text color: Green) -> 'only_audio', 'green'
+    """
+    if summary.empty:
+        return
+
+    plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
+    plt.rcParams["font.size"] = 24
+
+    subjects = summary['subject'].unique()
+
+    for subject in subjects:
+        subject_data = summary[summary['subject'] == subject]
+        fig, ax = plt.subplots(figsize=(10, 8)) 
+
+        display_order = [
+            ('only_audio', 'green', 'Aud. only'),
+            ('audio', 'green', 'Vis. + Aud.'),
+            ('vis', None, 'Vis. only'),
+            ('audio', 'red', 'Vis. + Aud.'),
+            ('only_audio', 'red', 'Aud. only')
+        ]
+
+        # 描画用データ
+        y_positions = []
+        y_labels = []
+        label_colors = []
+
+        red_dominant_data = []
+        green_dominant_data = []
+        both_low_data = []
+        red_amplitude_data = []
+        green_amplitude_data = []
+        both_amplitude_data = []
+
+        for idx, (stim, color, label) in enumerate(display_order):
+            y_positions.append(idx)
+            y_labels.append(label)
+
+            # ラベル色
+            if color == 'red':
+                label_colors.append('red')
+            elif color == 'green':
+                label_colors.append('green')
+            else:
+                label_colors.append('black')
+
+            if stim == 'vis':
+                # Vis aggregated
+                vis_data = subject_data[subject_data['stimulus_type'] == 'vis']
+                if not vis_data.empty:
+                    # 集約 (加重平均)
+                    total_samples = vis_data['total_valid_samples_sum'].sum()
+                    if total_samples > 0:
+                        total_red = vis_data['red_dominant_samples_sum'].sum()
+                        total_green = vis_data['green_dominant_samples_sum'].sum()
+                        total_both = vis_data['both_low_samples_sum'].sum()
+                        
+                        red_dominant_data.append((total_red / total_samples) * 100)
+                        green_dominant_data.append((total_green / total_samples) * 100)
+                        both_low_data.append((total_both / total_samples) * 100)
+                        
+                        # 振幅平均
+                        w_r_a, w_g_a, w_b_a = 0, 0, 0
+                        for _, row in vis_data.iterrows():
+                             if pd.notna(row['red_dominant_mean_mean']): w_r_a += row['red_dominant_mean_mean'] * row['red_dominant_samples_sum']
+                             if pd.notna(row['green_dominant_mean_mean']): w_g_a += row['green_dominant_mean_mean'] * row['green_dominant_samples_sum']
+                             if pd.notna(row['both_low_mean_mean']): w_b_a += row['both_low_mean_mean'] * row['both_low_samples_sum']
+                        
+                        red_amplitude_data.append(w_r_a/total_red if total_red > 0 else np.nan)
+                        green_amplitude_data.append(w_g_a/total_green if total_green > 0 else np.nan)
+                        both_amplitude_data.append(w_b_a/total_both if total_both > 0 else np.nan)
+                    else:
+                        red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                        red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+                else:
+                    red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                    red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+            
+            else:
+                # Specific color condition
+                row = subject_data[(subject_data['stimulus_type'] == stim) & (subject_data['color_condition'] == color)]
+                if not row.empty:
+                    r = row.iloc[0]
+                    total_samples = r['total_valid_samples_sum']
+                    if total_samples > 0:
+                        red_dominant_data.append((r['red_dominant_samples_sum'] / total_samples) * 100)
+                        green_dominant_data.append((r['green_dominant_samples_sum'] / total_samples) * 100)
+                        both_low_data.append((r['both_low_samples_sum'] / total_samples) * 100)
+                        red_amplitude_data.append(r['red_dominant_mean_mean'])
+                        green_amplitude_data.append(r['green_dominant_mean_mean'])
+                        both_amplitude_data.append(r['both_low_mean_mean'])
+                    else:
+                        red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                        red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+                else:
+                    red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                    red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+
+        # Plotting
+        width = 0.7
+        color_red = '#ff6b6b'
+        color_green = '#51cf66'
+        color_both = '#808080'
+
+        p1 = ax.barh(y_positions, red_dominant_data, width, label='赤ドット優勢', color=color_red, alpha=0.8)
+        p2 = ax.barh(y_positions, both_low_data, width, left=red_dominant_data, label='両方低相関', color=color_both, alpha=0.8)
+        green_left = [r + b for r, b in zip(red_dominant_data, both_low_data)]
+        p3 = ax.barh(y_positions, green_dominant_data, width, left=green_left, label='緑ドット優勢', color=color_green, alpha=0.8)
+
+        ax.set_title(f'被験者: {subject} - Audio Expanded Comparison', fontsize=14, fontweight='bold')
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(y_labels)
+        
+        # y軸ラベルの色を設定
+        for i, tick_label in enumerate(ax.get_yticklabels()):
+            tick_label.set_color(label_colors[i])
+
+        ax.set_xlim(0, 100)
+        ax.set_xticklabels([0, 20, 40, 60, 80, 100], fontsize=24)
+        ax.grid(True, alpha=0.3, axis='x')
+
+        # Annotations
+        for i, y in enumerate(y_positions):
+            if red_dominant_data[i] > 1.0:
+                x_pos = red_dominant_data[i] / 2
+                label_text = f'{red_dominant_data[i]:.1f}[%]'
+                if not np.isnan(red_amplitude_data[i]): label_text += f'\n{red_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+            
+            if both_low_data[i] > 1.0:
+                x_pos = red_dominant_data[i] + both_low_data[i] / 2
+                label_text = f'{both_low_data[i]:.1f}[%]'
+                if not np.isnan(both_amplitude_data[i]): label_text += f'\n{both_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+                
+            if green_dominant_data[i] > 1.0:
+                x_pos = green_left[i] + green_dominant_data[i] / 2
+                label_text = f'{green_dominant_data[i]:.1f}[%]'
+                if not np.isnan(green_amplitude_data[i]): label_text += f'\n{green_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+
+        plt.tight_layout()
+        output_file = os.path.join(output_dir, f'displacement_pattern_percentage_stacked_audio_expanded_{subject}.png')
+        fig.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"Audio Expanded条件積み上げ棒グラフを保存: {output_file}")
+        plt.close(fig)
+
+
+def create_stacked_bar_visualization_gvs_expanded(summary, output_dir):
+    """
+    GVS Expanded条件の積み上げ棒グラフを作成
+    上から:
+    - Ves. only (Text color: Red) -> 'only_gvs', 'red'
+    - Vis. + Ves. (Text color: Red) -> 'gvs', 'red'
+    - Vis. only (Text color: Black) -> 'vis', (aggregated)
+    - Vis. + Ves. (Text color: Green) -> 'gvs', 'green'
+    - Ves. only (Text color: Green) -> 'only_gvs', 'green'
+    """
+    if summary.empty:
+        return
+
+    plt.rcParams['font.family'] = ['Arial Unicode MS', 'Hiragino Sans', 'DejaVu Sans']
+    plt.rcParams["font.size"] = 24
+
+    subjects = summary['subject'].unique()
+
+    for subject in subjects:
+        subject_data = summary[summary['subject'] == subject]
+        fig, ax = plt.subplots(figsize=(10, 8)) 
+
+        display_order = [
+            ('only_gvs', 'green', 'Ves. only'),
+            ('gvs', 'green', 'Vis. + Ves.'),
+            ('vis', None, 'Vis. only'),
+            ('gvs', 'red', 'Vis. + Ves.'),
+            ('only_gvs', 'red', 'Ves. only')
+        ]
+
+        # 描画用データ
+        y_positions = []
+        y_labels = []
+        label_colors = []
+
+        red_dominant_data = []
+        green_dominant_data = []
+        both_low_data = []
+        red_amplitude_data = []
+        green_amplitude_data = []
+        both_amplitude_data = []
+
+        for idx, (stim, color, label) in enumerate(display_order):
+            y_positions.append(idx)
+            y_labels.append(label)
+
+            # ラベル色
+            if color == 'red':
+                label_colors.append('red')
+            elif color == 'green':
+                label_colors.append('green')
+            else:
+                label_colors.append('black')
+
+            if stim == 'vis':
+                # Vis aggregated
+                vis_data = subject_data[subject_data['stimulus_type'] == 'vis']
+                if not vis_data.empty:
+                    # 集約 (加重平均)
+                    total_samples = vis_data['total_valid_samples_sum'].sum()
+                    if total_samples > 0:
+                        total_red = vis_data['red_dominant_samples_sum'].sum()
+                        total_green = vis_data['green_dominant_samples_sum'].sum()
+                        total_both = vis_data['both_low_samples_sum'].sum()
+                        
+                        red_dominant_data.append((total_red / total_samples) * 100)
+                        green_dominant_data.append((total_green / total_samples) * 100)
+                        both_low_data.append((total_both / total_samples) * 100)
+                        
+                        # 振幅平均
+                        w_r_a, w_g_a, w_b_a = 0, 0, 0
+                        for _, row in vis_data.iterrows():
+                             if pd.notna(row['red_dominant_mean_mean']): w_r_a += row['red_dominant_mean_mean'] * row['red_dominant_samples_sum']
+                             if pd.notna(row['green_dominant_mean_mean']): w_g_a += row['green_dominant_mean_mean'] * row['green_dominant_samples_sum']
+                             if pd.notna(row['both_low_mean_mean']): w_b_a += row['both_low_mean_mean'] * row['both_low_samples_sum']
+                        
+                        red_amplitude_data.append(w_r_a/total_red if total_red > 0 else np.nan)
+                        green_amplitude_data.append(w_g_a/total_green if total_green > 0 else np.nan)
+                        both_amplitude_data.append(w_b_a/total_both if total_both > 0 else np.nan)
+                    else:
+                        red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                        red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+                else:
+                    red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                    red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+            
+            else:
+                # Specific color condition
+                row = subject_data[(subject_data['stimulus_type'] == stim) & (subject_data['color_condition'] == color)]
+                if not row.empty:
+                    r = row.iloc[0]
+                    total_samples = r['total_valid_samples_sum']
+                    if total_samples > 0:
+                        red_dominant_data.append((r['red_dominant_samples_sum'] / total_samples) * 100)
+                        green_dominant_data.append((r['green_dominant_samples_sum'] / total_samples) * 100)
+                        both_low_data.append((r['both_low_samples_sum'] / total_samples) * 100)
+                        red_amplitude_data.append(r['red_dominant_mean_mean'])
+                        green_amplitude_data.append(r['green_dominant_mean_mean'])
+                        both_amplitude_data.append(r['both_low_mean_mean'])
+                    else:
+                        red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                        red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+                else:
+                    red_dominant_data.append(0); green_dominant_data.append(0); both_low_data.append(0)
+                    red_amplitude_data.append(np.nan); green_amplitude_data.append(np.nan); both_amplitude_data.append(np.nan)
+
+        # Plotting
+        width = 0.7
+        color_red = '#ff6b6b'
+        color_green = '#51cf66'
+        color_both = '#808080'
+
+        p1 = ax.barh(y_positions, red_dominant_data, width, label='赤ドット優勢', color=color_red, alpha=0.8)
+        p2 = ax.barh(y_positions, both_low_data, width, left=red_dominant_data, label='両方低相関', color=color_both, alpha=0.8)
+        green_left = [r + b for r, b in zip(red_dominant_data, both_low_data)]
+        p3 = ax.barh(y_positions, green_dominant_data, width, left=green_left, label='緑ドット優勢', color=color_green, alpha=0.8)
+
+        ax.set_title(f'被験者: {subject} - GVS Expanded Comparison', fontsize=14, fontweight='bold')
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(y_labels)
+        
+        # y軸ラベルの色を設定
+        for i, tick_label in enumerate(ax.get_yticklabels()):
+            tick_label.set_color(label_colors[i])
+
+        ax.set_xlim(0, 100)
+        ax.set_xticklabels([0, 20, 40, 60, 80, 100], fontsize=24)
+        ax.grid(True, alpha=0.3, axis='x')
+
+        # Annotations
+        for i, y in enumerate(y_positions):
+            if red_dominant_data[i] > 1.0:
+                x_pos = red_dominant_data[i] / 2
+                label_text = f'{red_dominant_data[i]:.1f}[%]'
+                if not np.isnan(red_amplitude_data[i]): label_text += f'\n{red_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+            
+            if both_low_data[i] > 1.0:
+                x_pos = red_dominant_data[i] + both_low_data[i] / 2
+                label_text = f'{both_low_data[i]:.1f}[%]'
+                if not np.isnan(both_amplitude_data[i]): label_text += f'\n{both_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+                
+            if green_dominant_data[i] > 1.0:
+                x_pos = green_left[i] + green_dominant_data[i] / 2
+                label_text = f'{green_dominant_data[i]:.1f}[%]'
+                if not np.isnan(green_amplitude_data[i]): label_text += f'\n{green_amplitude_data[i]:.2f}[cm]'
+                ax.text(x_pos, y, label_text, ha='center', va='center', fontsize=20, color='black', fontweight='bold')
+
+        plt.tight_layout()
+        output_file = os.path.join(output_dir, f'displacement_pattern_percentage_stacked_gvs_expanded_{subject}.png')
+        fig.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"GVS Expanded条件積み上げ棒グラフを保存: {output_file}")
+        plt.close(fig)
 
 
 def create_legacy_visualization(results, summary, output_dir):
